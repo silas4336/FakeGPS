@@ -35,13 +35,22 @@ if [ "${MACOS_VER%%.*}" -lt 14 ]; then
   warn "你的 macOS 是 $MACOS_VER，建議 14 以上（Liquid Glass 需要 26+，舊版會用毛玻璃 fallback）。"
 fi
 
-if ! command -v swiftc >/dev/null; then
-  warn "找不到 swiftc（Xcode Command Line Tools）。"
+# 判斷模式：附帶預編 App（release zip）就不需要 swiftc；否則要編譯
+PREBUILT=""
+for cand in "./FakeGPS.app" "./build/FakeGPS.app"; do
+  [ -d "$cand" ] && PREBUILT="$cand" && break
+done
+
+if [ -n "$PREBUILT" ]; then
+  ok "找到預編 App（$PREBUILT），免編譯"
+elif command -v swiftc >/dev/null; then
+  ok "Xcode Command Line Tools（將從原始碼編譯）"
+else
+  warn "找不到預編 App，也找不到 swiftc（Xcode Command Line Tools）。"
   echo "  即將執行：xcode-select --install （會跳出安裝視窗，裝完再重跑此腳本）"
   [ "$(ask '現在安裝？[Y/n]')" != "n" ] && xcode-select --install || true
   die "請等 Command Line Tools 安裝完成後，再執行一次 ./install.sh"
 fi
-ok "Xcode Command Line Tools"
 
 # Homebrew（缺就問是否裝）
 if ! command -v brew >/dev/null; then
@@ -81,10 +90,15 @@ helper=$HELPER
 CFG
 ok "設定寫入 $STATE_DIR/config"
 
-# ─── 4. 編譯 ───
-say "編譯 Universal App（arm64 + x86_64）…"
-./build.sh ./build >/dev/null
-ok "編譯完成"
+# ─── 4. 取得 App（預編優先，否則編譯）───
+if [ -n "$PREBUILT" ]; then
+  APP_SRC="$PREBUILT"
+else
+  say "編譯 Universal App（arm64 + x86_64）…"
+  ./build.sh ./build >/dev/null
+  APP_SRC="./build/FakeGPS.app"
+  ok "編譯完成"
+fi
 
 # ─── 5. 免密碼 tunnel 權限 ───
 say "設定免密碼 tunnel 權限（需要輸入一次系統密碼）…"
@@ -115,7 +129,7 @@ ok "免密碼權限已設定（使用者 $USER_NAME）"
 # ─── 6. 安裝 App ───
 say "安裝到 /Applications…"
 rm -rf "/Applications/FakeGPS.app"
-cp -R "./build/FakeGPS.app" "/Applications/FakeGPS.app"
+cp -R "$APP_SRC" "/Applications/FakeGPS.app"
 ok "已安裝 FakeGPS.app"
 
 # ─── 完成 ───

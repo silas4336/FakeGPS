@@ -117,7 +117,7 @@ final class Controller: ObservableObject {
     }
 
     func poll() {
-        guard let id = udid() else {
+        guard udid() != nil else {
             if deviceConnected { teardown() }   // 手機拔除 → 清狀態
             deviceConnected = false; deviceName = ""
             return
