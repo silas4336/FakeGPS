@@ -252,7 +252,7 @@ extension View {
 
 // MARK: - 主畫面
 struct ContentView: View {
-    @StateObject private var c = Controller()
+    @ObservedObject var c: Controller
     @FocusState private var searchFocused: Bool
     @AppStorage("lang") private var lang = "zh"
     @AppStorage("defaultSpeed") private var defaultSpeed = 0
@@ -296,7 +296,14 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: c.toast)
         .focusable().onKeyPress { handleKey($0) }
+        .navigationTitle(windowTitle)
         .onAppear { speedSel = defaultSpeed; if let r = c.lastRecent { center(r.coord, zoom: 0.05) } }
+    }
+
+    var windowTitle: String {
+        if c.moving { return "FakeGPS — " + loc("移動中", "Moving") }
+        if c.simulating { return "FakeGPS — " + c.lastLabel }
+        return "FakeGPS"
     }
 
     var panel: some View {
@@ -364,6 +371,12 @@ struct ContentView: View {
             }
             TextField(loc("鼎泰豐 信義、東京駅、Eiffel Tower", "e.g. Eiffel Tower, Tokyo Station"), text: $query)
                 .textFieldStyle(.roundedBorder).focused($searchFocused).onChange(of: query) { _, q in scheduleSearch(q) }
+                .overlay(alignment: .trailing) {
+                    if !query.isEmpty {
+                        Button { query = ""; hits = [] } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                            .buttonStyle(.plain).padding(.trailing, 6)
+                    }
+                }
             ForEach(hits) { h in
                 VStack(alignment: .leading, spacing: 1) {
                     Text(h.title).font(.callout.weight(.medium))
@@ -384,6 +397,7 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 Button { applySet() } label: { Label(loc("設定", "Set"), systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
                     .glassButton(tint: .blue).controlSize(.large).keyboardShortcut(.return, modifiers: .command)
+                Button { copyCoord() } label: { Image(systemName: "doc.on.doc").padding(.vertical, 3) }.glassButton().controlSize(.large).help(loc("複製座標", "Copy coordinates"))
                 Button { addBookmark() } label: { Image(systemName: "star").padding(.vertical, 3) }.glassButton().controlSize(.large)
                 Button { c.clear() } label: { Image(systemName: "location.slash").padding(.vertical, 3) }
                     .glassButton().controlSize(.large).disabled(!c.simulating).keyboardShortcut("k", modifiers: .command)
@@ -476,7 +490,17 @@ struct ContentView: View {
         guard let lat = Double(latText), let lon = Double(lonText) else { return nil }
         return (lat, lon, pickedLabel.isEmpty ? "\(lat),\(lon)" : pickedLabel)
     }
-    func applySet() { guard let (a, b, l) = currentPoint() else { c.flash(loc("請先選地點或輸入座標", "Pick a place or enter coordinates")); return }; c.setLocation(a, b, l) }
+    func applySet() {
+        guard let (a, b, l) = currentPoint() else { c.flash(loc("請先選地點或輸入座標", "Pick a place or enter coordinates")); return }
+        guard (-90...90).contains(a), (-180...180).contains(b) else { c.flash(loc("座標超出範圍（緯度 ±90、經度 ±180）", "Coordinates out of range (lat ±90, lon ±180)")); return }
+        c.setLocation(a, b, l)
+    }
+    func copyCoord() {
+        guard let (a, b, _) = currentPoint() else { c.flash(loc("沒有可複製的座標", "No coordinates to copy")); return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(String(format: "%.6f, %.6f", a, b), forType: .string)
+        c.flash(loc("已複製座標", "Coordinates copied"))
+    }
     func addBookmark() {
         guard let (lat, lon, label) = currentPoint() else { c.flash(loc("請先選一個地點", "Pick a place first")); return }
         let alert = NSAlert(); alert.messageText = loc("加入書籤", "Add bookmark"); alert.informativeText = loc("輸入書籤名稱", "Enter a name")
@@ -510,8 +534,13 @@ struct ContentView: View {
         MKDirections(request: req).calculate { resp, _ in
             Task { @MainActor in
                 let label = pickedLabel.isEmpty ? loc("終點", "end") : pickedLabel
-                if let route = resp?.routes.first { c.playRoute(route.polyline.coords, speed: mode, label: label) }
-                else { c.playRoute([start, dest], speed: mode, label: label) }
+                if let route = resp?.routes.first {
+                    c.playRoute(route.polyline.coords, speed: mode, label: label)
+                    let km = route.distance / 1000, mins = (route.distance / mode.mps) / 60
+                    c.flash(String(format: loc("移動中 → %@（約 %.1f km，%.0f 分）", "Moving → %@ (~%.1f km, %.0f min)"), label, km, mins))
+                } else {
+                    c.playRoute([start, dest], speed: mode, label: label)   // 無路線改走直線
+                }
             }
         }
     }
@@ -551,6 +580,7 @@ struct ContentView: View {
 // MARK: - 設定視窗
 struct SettingsView: View {
     @AppStorage("lang") private var lang = "zh"
+    @AppStorage("appearance") private var appearance = "system"
     @AppStorage("defaultSpeed") private var defaultSpeed = 0
     @AppStorage("nudgeMeters") private var nudgeMeters = 4.0
 
@@ -558,6 +588,11 @@ struct SettingsView: View {
         Form {
             Picker(loc("語言", "Language"), selection: $lang) {
                 Text("繁體中文").tag("zh"); Text("English").tag("en")
+            }
+            Picker(loc("外觀", "Appearance"), selection: $appearance) {
+                Text(loc("跟隨系統", "System")).tag("system")
+                Text(loc("淺色", "Light")).tag("light")
+                Text(loc("深色", "Dark")).tag("dark")
             }
             Picker(loc("預設移動速度", "Default speed"), selection: $defaultSpeed) {
                 ForEach(SpeedMode.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
@@ -604,9 +639,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 @main
 struct FakeGPSApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
+    @StateObject private var controller = Controller()
+    @AppStorage("appearance") private var appearance = "system"
+    @AppStorage("lang") private var lang = "zh"
+
+    private var scheme: ColorScheme? { appearance == "light" ? .light : (appearance == "dark" ? .dark : nil) }
+
     var body: some Scene {
-        WindowGroup("FakeGPS") { ContentView() }
-            .windowResizability(.contentMinSize)
+        WindowGroup("FakeGPS") {
+            ContentView(c: controller).preferredColorScheme(scheme)
+        }
+        .windowResizability(.contentMinSize)
+        .commands {
+            CommandMenu(loc("裝置", "Device")) {
+                Button(loc("連線手機", "Connect phone")) { controller.startTunnel() }
+                    .keyboardShortcut("l", modifiers: .command).disabled(!controller.deviceConnected || controller.tunnelUp || controller.busy)
+                Button(loc("清除位置", "Clear location")) { controller.clear() }
+                    .keyboardShortcut(.delete, modifiers: .command).disabled(!controller.simulating)
+                Button(loc("停止移動", "Stop moving")) { controller.stopMoving() }
+                    .disabled(!controller.moving)
+            }
+            CommandGroup(replacing: .help) {
+                Link("FakeGPS on GitHub", destination: URL(string: "https://github.com/silas4336/FakeGPS")!)
+            }
+        }
         Settings { SettingsView() }
     }
 }
