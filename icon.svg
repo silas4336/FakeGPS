@@ -1,0 +1,43 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5b8cff"/>
+      <stop offset="1" stop-color="#2f4ad8"/>
+    </linearGradient>
+    <linearGradient id="pin" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e7edff"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.25"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="26" stdDeviation="30" flood-color="#0a163f" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <!-- 圓角底 -->
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#bg)"/>
+  <rect x="0" y="0" width="1024" height="1024" rx="224" fill="url(#glow)"/>
+
+  <!-- 經緯線地球暗示 -->
+  <g stroke="#ffffff" stroke-opacity="0.16" stroke-width="6" fill="none">
+    <circle cx="512" cy="470" r="300"/>
+    <ellipse cx="512" cy="470" rx="140" ry="300"/>
+    <ellipse cx="512" cy="470" rx="300" ry="140"/>
+    <line x1="212" y1="470" x2="812" y2="470"/>
+  </g>
+
+  <!-- 定位圖釘 -->
+  <g filter="url(#shadow)">
+    <path d="M512 250
+             c-126 0 -228 102 -228 228
+             c0 168 228 366 228 366
+             c0 0 228 -198 228 -366
+             c0 -126 -102 -228 -228 -228 Z"
+          fill="url(#pin)"/>
+    <circle cx="512" cy="478" r="96" fill="#2f4ad8"/>
+    <circle cx="512" cy="478" r="42" fill="#9db8ff"/>
+  </g>
+</svg>

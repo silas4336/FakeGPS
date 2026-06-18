@@ -1,0 +1,8 @@
+build/
+*.app
+*.o
+*.swiftmodule
+.DS_Store
+__pycache__/
+*.pyc
+docs/screenshot.png.tmp
