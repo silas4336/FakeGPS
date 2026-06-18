@@ -383,7 +383,7 @@ struct ContentView: View {
             }
             HStack(spacing: 8) {
                 Button { applySet() } label: { Label(loc("設定", "Set"), systemImage: "checkmark.circle.fill").frame(maxWidth: .infinity).padding(.vertical, 3) }
-                    .glassButton(tint: .blue).controlSize(.large).disabled(!c.tunnelUp).keyboardShortcut(.return, modifiers: .command)
+                    .glassButton(tint: .blue).controlSize(.large).keyboardShortcut(.return, modifiers: .command)
                 Button { addBookmark() } label: { Image(systemName: "star").padding(.vertical, 3) }.glassButton().controlSize(.large)
                 Button { c.clear() } label: { Image(systemName: "location.slash").padding(.vertical, 3) }
                     .glassButton().controlSize(.large).disabled(!c.simulating).keyboardShortcut("k", modifiers: .command)
@@ -406,7 +406,7 @@ struct ContentView: View {
                     .glassButton().controlSize(.large).disabled(picked == nil)
                 Button { startRoute() } label: {
                     Label(c.moving ? loc("停止", "Stop") : loc("開始移動", "Go"), systemImage: c.moving ? "stop.fill" : "play.fill").frame(maxWidth: .infinity).padding(.vertical, 3)
-                }.glassButton(tint: c.moving ? .orange : .green).controlSize(.large).disabled(!c.tunnelUp)
+                }.glassButton(tint: c.moving ? .orange : .green).controlSize(.large)
             }
             Text(loc("沿真實道路從起點移動到終點；起點留空則用目前模擬位置。", "Moves along real roads from start to end; leave start empty to use the current location."))
                 .font(.caption2).foregroundStyle(.secondary)
@@ -495,6 +495,7 @@ struct ContentView: View {
     }
     func startRoute() {
         if c.moving { c.stopMoving(); return }
+        guard c.tunnelUp else { c.flash(loc("請先按「連線手機」", "Tap \"Connect phone\" first")); return }
         guard let dest = picked else { c.flash(loc("請先選一個終點（在地圖點一下）", "Pick an end point (tap the map)")); return }
         guard let start = routeStart ?? c.lastCoord else {
             c.flash(loc("請先設定起點：按「選取點設為起點」，或先設定一個目前位置", "Set a start first: use \"Set start\", or set a current location"))
