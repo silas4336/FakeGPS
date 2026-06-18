@@ -49,7 +49,9 @@ permissions, and copies the app to `/Applications`. Plug in your iPhone, open Fa
 - **Map styles** — switch between standard, hybrid, and satellite
 - **Bookmarks & recents** — one-tap switching to favorites; recently-used locations are remembered automatically
 - **Nudge controls + keyboard shortcuts** — arrow keys to fine-tune position (great for games/AR), ⌘⏎ to set, ⌘K to clear
-- **Settings (⌘,)** — switch language (English / 繁體中文), default movement speed, and nudge step; resizable window
+- **Settings (⌘,)** — language (English / 繁體中文), appearance (system / light / dark), default speed, nudge step; resizable window
+- **Native menu bar** — Device menu (Connect ⌘L, Clear ⌘⌫, Stop moving); window title reflects the current state
+- **Quality-of-life** — copy coordinates, clear-search button, coordinate range validation, route distance/ETA estimate
 - **No repeated password prompts** — a NOPASSWD helper is configured once at install
 - Works on **iOS 17+** (modern RemoteXPC tunnel) and both **Apple Silicon and Intel** (Universal binary)
 
