@@ -1,0 +1,20 @@
+name: lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y shellcheck
+          shellcheck -S warning install.sh uninstall.sh build.sh doctor.sh bootstrap.sh
+
+  # 註：Swift 編譯需要 macOS 26 SDK（Liquid Glass API），待 GitHub macOS 26 runner
+  # 成為標準後可加上 build job：runs-on: macos-26 → ./build.sh
