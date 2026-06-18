@@ -42,9 +42,12 @@ cd FakeGPS
 ## 功能
 
 - **原生 SwiftUI App** + Liquid Glass 介面（macOS 26+；舊系統自動降級為毛玻璃材質）
-- **Apple Maps 搜尋**（`MKLocalSearch`）—— 免 API key，中／日／英地標品質都好
-- **點地圖**設位置、拖曳圖釘，或直接輸入座標
-- **常用書籤**，一鍵切換常去的地方
+- **Apple Maps 搜尋**（`MKLocalSearch`）—— 免 API key，中／日／英品質都好；結果同時標在地圖上
+- **點地圖**設位置（自動反查地名）、拖曳圖釘，或直接輸入座標
+- **移動／路線模擬** —— 用 `MKDirections` 算真實道路路線，以步行／騎車／開車速度移動，測導航、運動 app
+- **地圖樣式** —— 標準／混合／衛星切換
+- **書籤與最近紀錄** —— 常用地點一鍵切換；最近設過的位置自動記住
+- **微調搖桿 + 快捷鍵** —— 方向鍵微移位置（適合遊戲/AR）、⌘⏎ 設定、⌘K 清除
 - **不用反覆輸密碼** —— 安裝時設好的 NOPASSWD helper
 - 支援 **iOS 17+**（現代 RemoteXPC tunnel）、**Apple Silicon 與 Intel**（Universal binary）
 
