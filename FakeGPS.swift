@@ -321,6 +321,7 @@ struct ContentView: View {
         }
         .scrollIndicators(.never)
         .glassPanel(RoundedRectangle(cornerRadius: 22))
+        .contentShape(RoundedRectangle(cornerRadius: 22))   // 面板攔截點擊，避免穿透到地圖設點
     }
 
     var statusBlock: some View {
@@ -419,15 +420,24 @@ struct ContentView: View {
         }
     }
     var nudgePad: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             nudgeBtn("chevron.up", 1, 0)
-            HStack(spacing: 6) { nudgeBtn("chevron.left", 0, -1); nudgeBtn("scope", 0, 0); nudgeBtn("chevron.right", 0, 1) }
+            HStack(spacing: 8) { nudgeBtn("chevron.left", 0, -1); nudgeBtn("scope", 0, 0); nudgeBtn("chevron.right", 0, 1) }
             nudgeBtn("chevron.down", -1, 0)
-        }.padding(10).glassPanel(RoundedRectangle(cornerRadius: 16)).opacity(picked == nil ? 0.45 : 1)
+        }
+        .padding(14)
+        .glassPanel(RoundedRectangle(cornerRadius: 20))
+        .contentShape(RoundedRectangle(cornerRadius: 20))   // 整塊攔截點擊，不穿透到地圖
+        .opacity(picked == nil ? 0.5 : 1)
     }
     func nudgeBtn(_ icon: String, _ dy: Int, _ dx: Int) -> some View {
-        Button { nudge(Double(dy), Double(dx)) } label: { Image(systemName: icon).frame(width: 26, height: 22) }
-            .buttonStyle(.plain).disabled(picked == nil && icon != "scope")
+        Button { nudge(Double(dy), Double(dx)) } label: {
+            Image(systemName: icon).font(.title3.weight(.semibold))
+                .frame(width: 50, height: 44)
+                .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 11))
+                .contentShape(RoundedRectangle(cornerRadius: 11))
+        }
+        .buttonStyle(.plain).disabled(picked == nil && icon != "scope")
     }
     var mapView: some View {
         MapReader { proxy in
