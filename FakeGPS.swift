@@ -151,7 +151,9 @@ final class Controller: ObservableObject {
         guard tunnelUp, tunnelProc?.isRunning == true else { flash(loc("請先連線手機", "Connect the phone first")); return }
         stopMovingInternal(); simProc?.terminate()
         let p = Process(); p.executableURL = URL(fileURLWithPath: Cfg.python)
-        p.arguments = pm3(["set", "--", String(lat), String(lon)])
+        // --rsd 必須在 `--` 之前，否則會被當成位置參數導致 set 失敗
+        p.arguments = ["-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
+                       "set", "--rsd", rsdHost, rsdPort, "--", String(lat), String(lon)]
         p.standardOutput = FileHandle.nullDevice; p.standardError = FileHandle.nullDevice
         do { try p.run() } catch { flash(loc("設定失敗", "Failed to set")); return }
         simProc = p; simulating = true; lastLabel = label; lastCoord = .init(latitude: lat, longitude: lon)
