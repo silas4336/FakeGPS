@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FakeGPS</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --bg:#0f1115; --panel:#171a21cc; --line:#262b36; --txt:#e6e9ef; --dim:#8b93a3;
+          --accent:#4f8cff; --green:#34c759; --red:#ff453a; --orange:#ff9f0a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI","PingFang TC",sans-serif; color:var(--txt);
+         background:var(--bg); height:100vh; overflow:hidden; }
+  #app { position:relative; height:100vh; }
+  #map { position:absolute; inset:0; }
+  #panel { position:absolute; top:14px; left:14px; width:330px; max-height:calc(100vh - 28px);
+           overflow:auto; background:var(--panel); backdrop-filter:blur(20px);
+           border:1px solid var(--line); border-radius:18px; padding:16px; z-index:1000; }
+  h1 { margin:0; font-size:17px; } .sub { color:var(--dim); font-size:12px; margin:2px 0 12px; }
+  .sec { border-top:1px solid var(--line); padding-top:12px; margin-top:12px; }
+  .row { display:flex; gap:8px; } .srow { display:flex; align-items:center; gap:8px; margin:5px 0; font-size:13px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--dim); flex:none; }
+  .dot.on{background:var(--green);box-shadow:0 0 6px var(--green)} .dot.off{background:var(--red)} .dot.mv{background:var(--orange)}
+  button { font:inherit; border:0; border-radius:9px; padding:9px 12px; background:var(--accent); color:#fff;
+           cursor:pointer; font-weight:600; } button.g{background:#222732;color:var(--txt);border:1px solid var(--line)}
+  button:disabled{opacity:.45;cursor:not-allowed} button.w{width:100%} .lbl{color:var(--dim);font-size:12px;margin:10px 0 4px;font-weight:600}
+  input{font:inherit;width:100%;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:#0d0f14;color:var(--txt)}
+  .res{padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-top:6px;cursor:pointer;font-size:12.5px}
+  .res:hover{border-color:var(--accent)} .res small{color:var(--dim)}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}
+  .chip{display:inline-flex;align-items:center;gap:5px;padding:5px 9px;background:#1b2330;border:1px solid var(--line);
+        border-radius:99px;font-size:12px;cursor:pointer} .chip:hover{border-color:var(--accent)} .chip .x{color:var(--dim)}
+  .seg{display:flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .seg button{flex:1;background:transparent;border-radius:0;border-right:1px solid var(--line);font-weight:500}
+  .seg button:last-child{border-right:0} .seg button.sel{background:var(--accent)}
+  #toast{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);background:#1b2027;border:1px solid var(--line);
+         padding:9px 15px;border-radius:10px;opacity:0;transition:.25s;z-index:2000;pointer-events:none}
+  #toast.show{opacity:1} .muted{color:var(--dim);font-size:11.5px;margin-top:6px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="panel">
+    <h1>📍 FakeGPS</h1>
+    <div class="sub">iOS location simulator · <span id="os">—</span></div>
+
+    <div>
+      <div class="srow"><span id="d-dev" class="dot"></span><span id="t-dev">偵測中…</span></div>
+      <div class="srow"><span id="d-tun" class="dot"></span><span id="t-tun">未連線</span></div>
+      <div class="srow"><span id="d-sim" class="dot"></span><span id="t-sim">未模擬</span></div>
+      <button class="w" id="b-conn" style="margin-top:8px">🔌 連線手機</button>
+      <div class="muted" id="hint"></div>
+    </div>
+
+    <div class="sec" id="bm-sec" style="display:none">
+      <div class="lbl">⭐ 常用地點</div><div class="chips" id="bm"></div>
+    </div>
+    <div class="sec" id="rc-sec" style="display:none">
+      <div class="lbl">🕘 最近使用</div><div class="chips" id="rc"></div>
+    </div>
+
+    <div class="sec">
+      <div class="lbl">搜尋地點</div>
+      <input id="q" placeholder="Eiffel Tower、東京駅、台北101" autocomplete="off">
+      <div id="results"></div>
+      <div class="lbl">座標</div>
+      <div class="row"><input id="lat" placeholder="緯度"><input id="lon" placeholder="經度"></div>
+      <div class="row" style="margin-top:8px">
+        <button id="b-set">✅ 設定</button>
+        <button class="g" id="b-star">⭐</button>
+        <button class="g" id="b-clear">清除</button>
+      </div>
+    </div>
+
+    <div class="sec">
+      <div class="lbl">移動模擬</div>
+      <div class="seg" id="speed">
+        <button data-m="walk" class="sel">步行</button><button data-m="bike">騎車</button><button data-m="drive">開車</button>
+      </div>
+      <div class="muted" id="route-info">起點：<b id="s-start">目前位置</b> → 終點：<b id="s-end">選一個點</b></div>
+      <div class="row" style="margin-top:8px">
+        <button class="g" id="b-start">設選取點為起點</button>
+        <button id="b-go">▶ 開始移動</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const $=s=>document.querySelector(s); let map,marker,startMarker,picked=null,pickedLabel="",routeStart=null,speed="walk",tmr=null,lastReq=0;
+function toast(m,ok=true){const t=$('#toast');t.textContent=m;t.style.borderColor=ok?'var(--green)':'var(--red)';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
+const api=(p,o)=>fetch(p,o).then(r=>r.json());
+function pick(lat,lon,label){picked=[lat,lon];pickedLabel=label||"";$('#lat').value=(+lat).toFixed(6);$('#lon').value=(+lon).toFixed(6);
+  if(!marker){marker=L.marker([lat,lon],{draggable:true}).addTo(map);marker.on('dragend',e=>{const p=e.target.getLatLng();pick(p.lat,p.lng,'拖曳');});}
+  else marker.setLatLng([lat,lon]); $('#s-end').textContent=label||'選取點'; map.panTo([lat,lon]);}
+
+async function refresh(){const s=await api('/api/status');$('#os').textContent=s.os;
+  $('#d-dev').className='dot '+(s.device_connected?'on':'off');$('#t-dev').textContent=s.device_connected?('手機：'+s.device_name):'未偵測到手機';
+  $('#d-tun').className='dot '+(s.tunnel_up?'on':'');$('#t-tun').textContent=s.tunnel_up?'已連線':'未連線';
+  $('#d-sim').className='dot '+(s.simulating?'on':'');$('#t-sim').textContent=s.simulating?'模擬中':'未模擬';
+  $('#b-conn').disabled=!s.device_connected||s.tunnel_up;
+  $('#hint').textContent=!s.device_connected?'⚠️ 插上 iPhone、解鎖、信任（Windows 需 Apple 裝置 app）':(s.tunnel_up?'✓ 可以設定位置了':'按上方連線（需系統管理員）');
+}
+async function loadBM(){const {bookmarks,recents}=await api('/api/bookmarks');
+  const mk=(arr,box,sec,del)=>{const b=$(box);if(!arr.length){$(sec).style.display='none';return;}$(sec).style.display='';b.innerHTML='';
+    arr.forEach(it=>{const e=document.createElement('span');e.className='chip';e.innerHTML=`<span>📍 ${it.name||(it.lat.toFixed(3)+','+it.lon.toFixed(3))}</span>`+(del?'<span class="x">✕</span>':'');
+      e.querySelector('span').onclick=async()=>{pick(it.lat,it.lon,it.name);const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:it.lat,lon:it.lon,label:it.name})});toast(r.ok?('已切換：'+it.name):('失敗：'+(r.error||'')),r.ok);refresh();};
+      if(del)e.querySelector('.x').onclick=async(ev)=>{ev.stopPropagation();await api('/api/bookmarks/del',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:it.name})});loadBM();};
+      b.appendChild(e);});};
+  mk(bookmarks,'#bm','#bm-sec',true); mk(recents,'#rc','#rc-sec',false);}
+
+$('#b-conn').onclick=async()=>{$('#b-conn').disabled=true;$('#b-conn').textContent='連線中…';const r=await api('/api/start',{method:'POST'});$('#b-conn').textContent='🔌 連線手機';toast(r.ok?'tunnel 已建立':('失敗：'+(r.error||'')),r.ok);refresh();};
+async function doSearch(){const q=$('#q').value.trim();if(q.length<2){$('#results').innerHTML='';return;}const my=++lastReq;const r=await api('/api/search?q='+encodeURIComponent(q));if(my!==lastReq)return;
+  $('#results').innerHTML='';(r.results||[]).forEach(it=>{const e=document.createElement('div');e.className='res';e.innerHTML=`<div>${it.name}</div>`+(it.label&&it.label!==it.name?`<small>${it.label}</small>`:'');e.onclick=()=>pick(it.lat,it.lon,it.name);$('#results').appendChild(e);});}
+$('#q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,350);});
+function cur(){const a=parseFloat($('#lat').value),b=parseFloat($('#lon').value);if(isNaN(a)||isNaN(b))return null;if(a<-90||a>90||b<-180||b>180)return 'range';return[a,b];}
+$('#b-set').onclick=async()=>{const p=cur();if(!p){toast('請先選地點或輸入座標',false);return;}if(p==='range'){toast('座標超出範圍',false);return;}
+  const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:p[0],lon:p[1],label:pickedLabel||(p[0]+','+p[1])})});toast(r.ok?'已設定':('失敗：'+(r.error||'')),r.ok);refresh();loadBM();};
+$('#b-clear').onclick=async()=>{const r=await api('/api/clear',{method:'POST'});toast('已清除，恢復真實 GPS');refresh();};
+$('#b-star').onclick=async()=>{const p=cur();if(!p||p==='range'){toast('請先選一個地點',false);return;}const name=prompt('書籤名稱：',pickedLabel||'');if(!name)return;
+  await api('/api/bookmarks/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,lat:p[0],lon:p[1]})});toast('已加書籤：'+name);loadBM();};
+document.querySelectorAll('#speed button').forEach(b=>b.onclick=()=>{speed=b.dataset.m;document.querySelectorAll('#speed button').forEach(x=>x.classList.toggle('sel',x===b));});
+$('#b-start').onclick=()=>{if(!picked){toast('先在地圖選一個點',false);return;}routeStart=picked.slice();if(startMarker)startMarker.setLatLng(routeStart);else startMarker=L.marker(routeStart,{opacity:.7}).addTo(map);$('#s-start').textContent=pickedLabel||'選取點';toast('起點已設');};
+$('#b-go').onclick=async()=>{if(!picked){toast('請先選一個終點',false);return;}const s=routeStart||picked;
+  const r=await api('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slat:s[0],slon:s[1],elat:picked[0],elon:picked[1],mode:speed})});
+  toast(r.ok?('開始移動（'+speed+'）'):('失敗：'+(r.error||'')),r.ok);refresh();};
+
+map=L.map('map').setView([25.0338,121.5645],12);
+const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);
+const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'© Esri'});
+L.control.layers({"地圖":osm,"衛星":sat}).addTo(map);
+map.on('click',e=>pick(e.latlng.lat,e.latlng.lng,'地圖選點'));
+refresh();loadBM();setInterval(refresh,4000);
+</script>
+</body>
+</html>
