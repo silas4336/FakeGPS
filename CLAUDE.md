@@ -11,11 +11,15 @@ FakeGPS 透過 USB 把 iPhone 的 GPS 位置模擬成任意座標，底層用 [p
 | 路徑 | 平台 | 狀態 |
 |------|------|------|
 | `FakeGPS.swift`（根目錄）+ `build.sh`/`install.sh` | **macOS 原生**（SwiftUI + MapKit） | ✅ 完成可用，已在 macOS 實機測過 |
-| `crossplatform/`（`app.py` + `index.html`） | **Windows / Linux / macOS 網頁版** | ⚠️ 後端在 macOS 驗證過、Windows `.exe` 在 CI 編得起來，但**尚未在 Windows + iPhone 實機測試** |
+| `crossplatform/`（`app.py` + `index.html`） | **Windows / Linux / macOS 網頁版** | ✅ 已在 **Windows 11 + iPhone（iOS 27）實機測過** — tunnel → mount → set-location 全鏈路打通（2026-06） |
 
 ## 🎯 在這台 Windows 上的任務
 
 把 `crossplatform/` 版本在**真實 Windows + iPhone** 上跑起來、測試、修正。重點是 **tunnel 建立**那段（最可能卡）。測出問題就修 `crossplatform/app.py`、把 Windows 特有的設定/踩雷補進 `crossplatform/README.md`，並 commit。
+
+> **2026-06 實機測試結果（已完成）**：在 Windows 11 + iPhone iOS 27 跑通。發現並修正兩個問題：
+> 1. **tunnel 指令**：iOS 17.4+ 上 `remote start-tunnel -t usb -p tcp` 完全失效（`No tunnel services discovered / Device is not connected`），改用 **`lockdown start-tunnel --udid <UDID> --script-mode`** 才成功。`app.py` 的 `_tunnel_cmds()` 現在 lockdown 優先、remote 當 fallback。
+> 2. **run.bat**：本機 `python` 是 Microsoft Store 空殼，不會執行 → 改成優先用 `py` launcher；順手把 `>/dev/null` 修成 `>nul`。
 
 ## 如何在 Windows 執行與測試
 
@@ -50,7 +54,7 @@ python -m pymobiledevice3 developer dvt simulate-location set --rsd <HOST> <PORT
 
 1. **`simulate-location set` 的 `--rsd` 必須放在 `--` 之前**，否則 `--` 之後的東西被當成位置參數，pymobiledevice3 會報 `Got unexpected extra argument (--rsd ...)` → 設定失敗。正確：`set --rsd HOST PORT -- LAT LON`。（`app.py` 已是正確順序，改動時別弄反。）
 2. **tunnel 需要系統管理員權限**（建立網路介面）。Windows 沒有 sudo，靠 UAC；`run.bat` 已會自動提權。
-3. **iOS 17+** 才有的 RemoteXPC tunnel。用 `-p tcp`（Python 3.13+）可避免需要 TUN 驅動；若 Windows 上 tcp tunnel 失敗，試 `-p quic` 或查 pymobiledevice3 的 Windows tunnel 需求（可能要 WinTUN / Wintun.dll）。
+3. **iOS 17.4+ / iOS 18 / 26+ 一定要用 `lockdown start-tunnel`**（實機驗證）。舊的 `remote start-tunnel -t usb -p tcp` 在新版 iOS 會 `No tunnel services discovered` → `Device is not connected`，建不起來。`remote tunneld` daemon 在 Python 3.12（預設 quic）這台也沒成功建 tunnel。`lockdown start-tunnel` 走的 TUN 介面在這台 Windows 11 正常（wintun 可用）。
 4. **pymobiledevice3 要新版（>=4）**。舊版（如 2.x）搭新版 `qh3`（>=1.0）建 QUIC tunnel 會 crash（`KeyError: Epoch.ONE_RTT`）。`pip install -U pymobiledevice3` 即可。
 5. 裝置偵測用 `pymobiledevice3 usbmux list`（跨平台），**不需要** libimobiledevice（那是 macOS CLI 用的）。
 6. 搜尋走 **Photon + OpenStreetMap**（免金鑰）；路線走公開 **OSRM**，失敗則直線。都用 `curl`（Windows 10+ 內建 curl.exe）或 urllib。
