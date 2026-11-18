@@ -68,6 +68,8 @@ FAKE_TUNNEL=fail|hang|slow  FAKE_DEVICES=2  FAKE_LOG=路徑    # 環境變數控
 1. `MAX_GPX_POINTS = 5000`（每秒一點 ≈ 83 分鐘）是刻意的嗎？現在只是明講截斷；要改成取消上限或加大間隔？
 2. `set` 程序 1 秒內 rc=0 結束改判成功，是否符合預期？
 3. 公開 OSRM 這次兩次都退回直線（未查原因，可能是網路或服務限制）。
+   - 2026-11-18 已查明並修正：`_curl_json` 用系統預設編碼（繁中 Windows 為 cp950）解 curl 輸出，回應裡的中文路名是 UTF-8，解碼失敗 → 退回直線（地名搜尋同樣受影響）。改成指定 UTF-8，加 `CurlJsonTest`；實測台北 101→台北車站從 2 點變 170 點。
+   - 另：公開 router.project-osrm.org 只有汽車路網，`foot` 回的路線與 `driving` 相同（距離、時間都一樣）。要真正的步行路線得換服務或自架 OSRM foot profile，待決定。
 
 ## 需實機才能驗證（全部未驗證）
 tunnel 真實錯誤訊息對應的提示、DDI 掛載、`set`/`play`/`clear` 在手機上的效果、停止後手機位置、多台實體 iPhone 的 usbmux 輸出格式、搖桿在手機上是否順暢。

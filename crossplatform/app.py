@@ -106,7 +106,9 @@ def proc_alive(p):
 def _curl_json(url, timeout=15):
     curl = shutil.which("curl") or shutil.which("curl.exe")
     if curl:
-        p = subprocess.run([curl, "-fsS", "-A", "FakeGPS", url], capture_output=True, text=True, timeout=timeout)
+        # 回應是 UTF-8（中文路名、地名）；不指定的話繁中 Windows 用 cp950 解，失敗後路線會退回直線
+        p = subprocess.run([curl, "-fsS", "-A", "FakeGPS", url], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
         if p.returncode != 0:
             raise RuntimeError(p.stderr.strip() or "curl failed")
         return json.loads(p.stdout)

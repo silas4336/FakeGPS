@@ -93,6 +93,24 @@ class WaitForRsdTest(unittest.TestCase):
         self.assertEqual((rsd, why), (("fd00::1", "51234"), None))
 
 
+class CurlJsonTest(unittest.TestCase):
+    """OSRM／地名服務回 UTF-8（中文路名）；不能用系統預設編碼（繁中 Windows 是 cp950）解，
+    否則解碼失敗 → 路線退回直線、搜尋沒結果。"""
+
+    def test_utf8_body_with_chinese_names(self):
+        body = '{"routes":[{"name":"忠孝東路五段；信義路；松高路；市府路"}]}'
+        real_run = subprocess.run
+
+        def fake_curl(cmd, **kw):  # 用真的子程序吐 UTF-8 bytes，讓解碼走 app 實際的參數
+            return real_run([sys.executable, "-c", "import sys;sys.stdout.buffer.write(sys.argv[1].encode('utf-8'))",
+                             body], **kw)
+
+        with mock.patch.object(app.shutil, "which", return_value="curl"), \
+                mock.patch.object(app.subprocess, "run", side_effect=fake_curl):
+            d = app._curl_json("https://example.invalid/x")
+        self.assertEqual(d["routes"][0]["name"], "忠孝東路五段；信義路；松高路；市府路")
+
+
 class HintTest(unittest.TestCase):
     def test_known_errors_map_to_actions(self):
         self.assertIn("開發者模式", app.hint_for("DeveloperModeIsNotEnabledError", "x"))
