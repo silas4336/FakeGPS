@@ -35,6 +35,11 @@
   .seg button:last-child{border-right:0} .seg button.sel{background:var(--accent)}
   #toast{position:absolute;bottom:18px;left:50%;transform:translateX(-50%);background:#1b2027;border:1px solid var(--line);
          padding:9px 15px;border-radius:10px;opacity:0;transition:.25s;z-index:2000;pointer-events:none}
+  .steps{display:flex;gap:6px;margin-top:8px;font-size:11.5px} .steps span{flex:1;text-align:center;padding:4px 0;border-radius:7px;background:#1b2330;color:var(--dim)}
+  .steps span.cur{background:var(--accent);color:#fff;animation:pulse 1s infinite alternate} .steps span.done{color:var(--green)} .steps span.bad{background:var(--red);color:#fff}
+  [hidden]{display:none!important}   @keyframes pulse{to{opacity:.55}}
+  .err{margin-top:8px;padding:8px 10px;border:1px solid var(--red);border-radius:9px;font-size:12px}
+  .err pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;font-size:11px;color:var(--dim);margin:6px 0 0}
   #toast.show{opacity:1} .muted{color:var(--dim);font-size:11.5px;margin-top:6px}
 </style>
 </head>
@@ -50,7 +55,9 @@
       <div class="srow"><span id="d-tun" class="dot"></span><span id="t-tun">未連線</span></div>
       <div class="srow"><span id="d-sim" class="dot"></span><span id="t-sim">未模擬</span></div>
       <button class="w" id="b-conn" style="margin-top:8px">🔌 連線手機</button>
+      <div class="steps" id="steps" hidden><span data-s="detect">① 偵測裝置</span><span data-s="tunnel">② 建立 tunnel</span><span data-s="mount">③ 掛載 DDI</span></div>
       <div class="muted" id="hint"></div>
+      <div class="err" id="err" hidden><div id="err-msg"></div><details><summary>完整輸出</summary><pre id="err-detail"></pre></details></div>
     </div>
 
     <div class="sec" id="bm-sec" style="display:none">
@@ -112,7 +119,15 @@ async function loadBM(){const {bookmarks,recents}=await api('/api/bookmarks');
       b.appendChild(e);});};
   mk(bookmarks,'#bm','#bm-sec',true); mk(recents,'#rc','#rc-sec',false);}
 
-$('#b-conn').onclick=async()=>{$('#b-conn').disabled=true;$('#b-conn').textContent='連線中…';const r=await api('/api/start',{method:'POST'});$('#b-conn').textContent='🔌 連線手機';toast(r.ok?'tunnel 已建立':('失敗：'+(r.error||'')),r.ok);refresh();};
+const STEPS=['detect','tunnel','mount'];
+function showStep(cur,bad){$('#steps').hidden=false;const i=STEPS.indexOf(cur);
+  document.querySelectorAll('#steps span').forEach((e,k)=>e.className=k<i||(!cur&&!bad)?'done':k===i?(bad?'bad':'cur'):'');}
+$('#b-conn').onclick=async()=>{$('#b-conn').disabled=true;$('#b-conn').textContent='連線中…';$('#err').hidden=true;showStep('detect');
+  const poll=setInterval(async()=>{const s=await api('/api/status');if(s.step)showStep(s.step);},700);
+  const r=await api('/api/start',{method:'POST'});clearInterval(poll);$('#b-conn').textContent='🔌 連線手機';
+  if(r.ok){showStep(null);toast('tunnel 已建立');}
+  else{showStep(r.step,true);$('#err-msg').textContent=r.error||'失敗';$('#err-detail').textContent=r.detail||'（無輸出）';$('#err').hidden=false;toast('連線失敗',false);}
+  refresh();};
 async function doSearch(){const q=$('#q').value.trim();if(q.length<2){$('#results').innerHTML='';return;}const my=++lastReq;const r=await api('/api/search?q='+encodeURIComponent(q));if(my!==lastReq)return;
   $('#results').innerHTML='';(r.results||[]).forEach(it=>{const e=document.createElement('div');e.className='res';e.innerHTML=`<div>${it.name}</div>`+(it.label&&it.label!==it.name?`<small>${it.label}</small>`:'');e.onclick=()=>pick(it.lat,it.lon,it.name);$('#results').appendChild(e);});}
 $('#q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,350);});

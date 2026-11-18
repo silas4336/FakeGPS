@@ -1,6 +1,12 @@
 """crossplatform/app.py 的單元測試（只用標準庫）。執行：cd crossplatform && py -m unittest -v"""
+import os
 import re
+import subprocess
+import sys
+import time
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import app
 
@@ -53,6 +59,81 @@ class TunnelCmdsTest(unittest.TestCase):
         c = app._device_cmds("fd00::1", 51234, gpx="r.gpx")
         self.assertEqual(c["mount"][-3:], ["--rsd", "fd00::1", "51234"])
         self.assertEqual(c["play"][-4:], ["r.gpx", "--rsd", "fd00::1", "51234"])
+
+
+FAKE = str(Path(__file__).resolve().parent / "devtools" / "fake_pmd3")
+
+
+def py_proc(code):
+    return subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True)
+
+
+class WaitForRsdTest(unittest.TestCase):
+    def test_deadline_applies_even_when_child_is_silent(self):
+        p = py_proc("import time;print('starting',flush=True);time.sleep(30)")
+        t = time.monotonic()
+        rsd, lines, why = app.wait_for_rsd(p, 1)
+        p.kill()
+        self.assertLess(time.monotonic() - t, 3)
+        self.assertEqual((rsd, why, lines), (None, "timeout", ["starting"]))
+
+    def test_exit_returns_full_output(self):
+        p = py_proc("print('a');print('b');raise SystemExit(1)")
+        rsd, lines, why = app.wait_for_rsd(p, 5)
+        self.assertEqual((rsd, why, lines), (None, "exited", ["a", "b"]))
+
+    def test_parses_host_port(self):
+        p = py_proc("import time;print('log');print('fd00::1 51234',flush=True);time.sleep(30)")
+        rsd, _, why = app.wait_for_rsd(p, 5)
+        p.kill()
+        self.assertEqual((rsd, why), (("fd00::1", "51234"), None))
+
+
+class HintTest(unittest.TestCase):
+    def test_known_errors_map_to_actions(self):
+        self.assertIn("開發者模式", app.hint_for("DeveloperModeIsNotEnabledError", "x"))
+        self.assertIn("系統管理員", app.hint_for("PermissionError: [WinError 5] Access is denied", "x"))
+        self.assertEqual(app.hint_for("INFO starting tunnel", "fallback"), "fallback")
+
+
+@mock.patch.dict(os.environ, {"PYTHONPATH": FAKE})
+class StartTunnelWithFakeTest(unittest.TestCase):
+    def tearDown(self):
+        if app.proc_alive(app._tunnel["proc"]):
+            app._tunnel["proc"].kill()
+        app._tunnel.update(proc=None, host=None, port=None, step=None)
+
+    def test_ok_runs_mount(self):
+        r = app.start_tunnel()
+        self.assertEqual(r, {"ok": True, "rsd": "fd00::1 51234"})
+
+    def test_failure_reports_step_hint_and_full_output(self):
+        with mock.patch.dict(os.environ, {"FAKE_TUNNEL": "fail"}):
+            r = app.start_tunnel()
+        self.assertEqual(r["step"], "tunnel")
+        self.assertIn("開發者模式", r["error"])
+        # 兩種 tunnel 都試過，完整輸出都要回給使用者
+        self.assertIn("$ pymobiledevice3 lockdown start-tunnel", r["detail"])
+        self.assertIn("$ pymobiledevice3 remote start-tunnel", r["detail"])
+        self.assertIn("DeveloperModeIsNotEnabledError", r["detail"])
+
+    def test_falls_back_to_remote_when_lockdown_fails(self):
+        with mock.patch.dict(os.environ, {"FAKE_LOCKDOWN": "fail"}), \
+                mock.patch.object(app.subprocess, "Popen", wraps=app.subprocess.Popen) as po:
+            r = app.start_tunnel()
+        self.assertTrue(r["ok"])
+        tunnels = [c.args[0][3] for c in po.call_args_list if "start-tunnel" in c.args[0]]
+        self.assertEqual(tunnels, ["lockdown", "remote"])
+
+    def test_hang_times_out(self):
+        with mock.patch.dict(os.environ, {"FAKE_TUNNEL": "hang"}), mock.patch.object(app, "TUNNEL_TIMEOUT", 2):
+            t = time.monotonic()
+            r = app.start_tunnel()
+        self.assertLess(time.monotonic() - t, 10)
+        self.assertEqual(r["step"], "tunnel")
+        self.assertIn("逾時", r["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

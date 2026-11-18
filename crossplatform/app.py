@@ -11,6 +11,7 @@
 import json
 import os
 import platform
+import queue
 import re
 import shutil
 import subprocess
@@ -33,7 +34,7 @@ IS_WIN = platform.system() == "Windows"
 PYEXE = sys.executable
 
 # 執行期狀態
-_tunnel = {"proc": None, "host": None, "port": None}
+_tunnel = {"proc": None, "host": None, "port": None, "step": None}
 _sim = {"proc": None}
 
 
@@ -194,45 +195,99 @@ def _tunnel_cmds(udid):
     ]
 
 
+TUNNEL_TIMEOUT = 30
+
+# (輸出關鍵字, 可行動的提示)；依序比對，第一個命中者勝
+_HINTS = [
+    (("developer mode", "developermode"), "iPhone 尚未開啟開發者模式：設定 → 隱私權與安全性 → 開發者模式，開啟後重新開機"),
+    (("access is denied", "winerror 5", "permission denied", "administrator", "requires root", "sudo"), "權限不足：請用 run.bat（會自動以系統管理員身分執行）或在系統管理員終端機啟動"),
+    (("pairing", "not paired", "trust"), "iPhone 未信任這台電腦：解鎖手機，在跳出的「信任這部電腦？」點信任"),
+    (("wintun", "tun device", "tun interface"), "缺少 TUN 驅動：lockdown tunnel 需要 Wintun，請確認已安裝並以系統管理員執行"),
+    (("no module named", "modulenotfound"), "找不到 pymobiledevice3：執行 py -m pip install -U pymobiledevice3"),
+]
+
+
+def hint_for(output, fallback):
+    low = output.lower()
+    for keys, hint in _HINTS:
+        if any(k in low for k in keys):
+            return hint
+    return fallback
+
+
+def wait_for_rsd(proc, timeout):
+    """在背景執行緒讀 stdout，主執行緒用 queue.get(timeout) 等，讓期限真的生效。
+
+    回傳 (rsd 或 None, 讀到的所有行, 失敗原因 "timeout"/"exited"/None)。
+    """
+    q, waiting = queue.Queue(), threading.Event()
+    waiting.set()
+
+    def pump():
+        for line in proc.stdout:
+            if waiting.is_set():
+                q.put(line)
+        q.put(None)
+
+    threading.Thread(target=pump, daemon=True).start()
+    lines, deadline = [], time.monotonic() + timeout
+    try:
+        while True:
+            try:
+                line = q.get(timeout=max(deadline - time.monotonic(), 0))
+            except queue.Empty:
+                return None, lines, "timeout"
+            if line is None:
+                return None, lines, "exited"
+            lines.append(line.rstrip())
+            m = re.match(r"^([0-9a-fA-F:.]+)\s+(\d+)$", line.strip())
+            if m:
+                return (m.group(1), m.group(2)), lines, None
+    finally:
+        waiting.clear()  # 之後的輸出照樣被讀掉（避免 pipe 塞住），但不再累積
+
+
+def _fail(step, error, detail=""):
+    _tunnel["step"] = None
+    return {"ok": False, "step": step, "error": error, "detail": detail}
+
+
 def start_tunnel():
+    _tunnel["step"] = "detect"
     dev = detect_device()
     if not dev:
-        return {"ok": False, "error": "未偵測到 iPhone（請插上 USB、解鎖、信任；Windows 需安裝 Apple 裝置 app）"}
-    if proc_alive(_tunnel["proc"]) and _tunnel["host"]:
-        return {"ok": True, "rsd": f'{_tunnel["host"]} {_tunnel["port"]}'}
+        return _fail("detect", "未偵測到 iPhone（請插上 USB、解鎖、信任；Windows 需安裝 Apple 裝置 app）")
 
-    last = ""
-    for cmd in _tunnel_cmds(dev["udid"]):
-        proc = subprocess.Popen(
-            pmd3(*cmd),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        )
-        rsd = None
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            line = proc.stdout.readline()
-            if not line:
-                if proc.poll() is not None:
-                    break
-                continue
-            s = line.strip()
-            m = re.match(r"^([0-9a-fA-F:]+)\s+(\d+)$", s)
-            if m:
-                rsd = (m.group(1), m.group(2))
+    if not (proc_alive(_tunnel["proc"]) and _tunnel["host"]):
+        _tunnel["step"] = "tunnel"
+        outputs, why = [], None
+        for cmd in _tunnel_cmds(dev["udid"]):
+            proc = subprocess.Popen(pmd3(*cmd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            _tunnel["proc"], _tunnel["host"] = proc, None
+            rsd, lines, why = wait_for_rsd(proc, TUNNEL_TIMEOUT)
+            if rsd:
                 break
-            if s:
-                last = s
-        if rsd:
-            _tunnel["proc"] = proc
-            _tunnel["host"], _tunnel["port"] = rsd
-            # 繼續吞掉後續輸出避免阻塞
-            threading.Thread(target=lambda: [None for _ in proc.stdout], daemon=True).start()
-            run(_device_cmds(*rsd)["mount"][len(pmd3()):])
-            return {"ok": True, "rsd": f"{rsd[0]} {rsd[1]}"}
-        if proc_alive(proc):
-            proc.terminate()
-    return {"ok": False,
-            "error": f"tunnel 建立失敗（Windows 請確認以系統管理員執行、已裝 Apple 裝置驅動）。最後訊息：{last[:200]}"}
+            if proc_alive(proc):
+                proc.kill()
+            outputs.append("$ pymobiledevice3 " + " ".join(cmd) + "\n" + "\n".join(lines))
+        if not rsd:
+            out = "\n\n".join(outputs)
+            if why == "timeout":
+                msg = f"tunnel 建立逾時（每種方式 {TUNNEL_TIMEOUT} 秒）：" + hint_for(
+                    out, "確認手機已解鎖並信任、Windows 以系統管理員執行、已裝 Apple 裝置 app")
+            else:
+                msg = "tunnel 建立失敗（lockdown 與 remote 都試過）：" + hint_for(out, "請展開下方完整輸出查看原因")
+            return _fail("tunnel", msg, out)
+        _tunnel["host"], _tunnel["port"] = rsd
+
+    _tunnel["step"] = "mount"
+    rc, out, err = run(_device_cmds(_tunnel["host"], _tunnel["port"])["mount"][len(pmd3()):])
+    if rc != 0:
+        detail = (out + err).strip()
+        return _fail("mount", "tunnel 已建立，但掛載開發者映像（DDI）失敗：" + hint_for(
+            detail, "確認開發者模式已開啟、手機已解鎖；可再按一次連線重試"), detail)
+    _tunnel["step"] = None
+    return {"ok": True, "rsd": f'{_tunnel["host"]} {_tunnel["port"]}'}
 
 
 def set_location(lat, lon):
@@ -284,6 +339,7 @@ def status():
         "device_name": dev["name"] if dev else None,
         "tunnel_up": bool(proc_alive(_tunnel["proc"]) and _tunnel["host"]),
         "simulating": bool(proc_alive(_sim["proc"])),
+        "step": _tunnel["step"],
     }
 
 
