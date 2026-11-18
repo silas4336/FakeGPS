@@ -40,7 +40,7 @@ _sim = {"proc": None}
 # ───────── shell ─────────
 def run(args, timeout=90):
     try:
-        p = subprocess.run([PYEXE, "-m", "pymobiledevice3", *args],
+        p = subprocess.run(pmd3(*args),
                            capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except Exception as e:  # noqa: BLE001
@@ -161,6 +161,22 @@ def make_gpx(route, mps, interval=1.0):
 
 
 # ───────── 裝置動作 ─────────
+def pmd3(*args):
+    return [PYEXE, "-m", "pymobiledevice3", *args]
+
+
+def _device_cmds(host, port, lat=None, lon=None, gpx=None):
+    """組出 tunnel 建好後的 mount / set / play 指令。集中在這裡方便測參數順序。"""
+    rsd = ["--rsd", host, str(port)]
+    sim = ["developer", "dvt", "simulate-location"]
+    return {
+        "mount": pmd3("mounter", "auto-mount", *rsd),
+        # --rsd 必須在 `--` 之前，否則被當成位置參數
+        "set": pmd3(*sim, "set", *rsd, "--", str(lat), str(lon)),
+        "play": pmd3(*sim, "play", str(gpx), *rsd),
+    }
+
+
 def rsd_args(tail):
     return ["developer", "dvt", "simulate-location", *tail, "--rsd", _tunnel["host"], str(_tunnel["port"])]
 
@@ -188,7 +204,7 @@ def start_tunnel():
     last = ""
     for cmd in _tunnel_cmds(dev["udid"]):
         proc = subprocess.Popen(
-            [PYEXE, "-m", "pymobiledevice3", *cmd],
+            pmd3(*cmd),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         rsd = None
@@ -211,7 +227,7 @@ def start_tunnel():
             _tunnel["host"], _tunnel["port"] = rsd
             # 繼續吞掉後續輸出避免阻塞
             threading.Thread(target=lambda: [None for _ in proc.stdout], daemon=True).start()
-            run(rsd_args_mount())
+            run(_device_cmds(*rsd)["mount"][len(pmd3()):])
             return {"ok": True, "rsd": f"{rsd[0]} {rsd[1]}"}
         if proc_alive(proc):
             proc.terminate()
@@ -219,18 +235,12 @@ def start_tunnel():
             "error": f"tunnel 建立失敗（Windows 請確認以系統管理員執行、已裝 Apple 裝置驅動）。最後訊息：{last[:200]}"}
 
 
-def rsd_args_mount():
-    return ["mounter", "auto-mount", "--rsd", _tunnel["host"], str(_tunnel["port"])]
-
-
 def set_location(lat, lon):
     if not (proc_alive(_tunnel["proc"]) and _tunnel["host"]):
         return {"ok": False, "error": "請先連線手機"}
     stop_sim()
-    # --rsd 必須在 `--` 之前
     proc = subprocess.Popen(
-        [PYEXE, "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
-         "set", "--rsd", _tunnel["host"], str(_tunnel["port"]), "--", str(lat), str(lon)],
+        _device_cmds(_tunnel["host"], _tunnel["port"], lat=lat, lon=lon)["set"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     _sim["proc"] = proc
@@ -246,8 +256,7 @@ def play_route(coords, mps):
     ROUTE_GPX.write_text(make_gpx(coords, mps), encoding="utf-8")
     stop_sim()
     proc = subprocess.Popen(
-        [PYEXE, "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
-         "play", str(ROUTE_GPX), "--rsd", _tunnel["host"], str(_tunnel["port"])],
+        _device_cmds(_tunnel["host"], _tunnel["port"], gpx=ROUTE_GPX)["play"],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     _sim["proc"] = proc
