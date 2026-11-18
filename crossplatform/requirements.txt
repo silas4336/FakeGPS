@@ -1,1 +1,2 @@
-pymobiledevice3>=4
+# 鎖定版本：大版本 API 會變，升級前先跑 test_app.py 並接實機驗證
+pymobiledevice3==11.59.0

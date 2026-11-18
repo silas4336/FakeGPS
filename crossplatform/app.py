@@ -251,7 +251,7 @@ _HINTS = [
     (("access is denied", "winerror 5", "permission denied", "administrator", "requires root", "sudo"), "權限不足：請用 run.bat（會自動以系統管理員身分執行）或在系統管理員終端機啟動"),
     (("pairing", "not paired", "trust"), "iPhone 未信任這台電腦：解鎖手機，在跳出的「信任這部電腦？」點信任"),
     (("wintun", "tun device", "tun interface"), "缺少 TUN 驅動：lockdown tunnel 需要 Wintun，請確認已安裝並以系統管理員執行"),
-    (("no module named", "modulenotfound"), "找不到 pymobiledevice3：執行 py -m pip install -U pymobiledevice3"),
+    (("no module named", "modulenotfound"), "找不到 pymobiledevice3：執行 py -m pip install -r crossplatform/requirements.txt"),
 ]
 
 

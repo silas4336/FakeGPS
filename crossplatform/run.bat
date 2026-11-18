@@ -14,7 +14,7 @@ where py >nul 2>&1 || set "PY=python"
 %PY% --version >nul 2>&1 || (echo [錯誤] 找不到可用的 Python，請從 python.org 安裝 Python 3.11+（勾選 Add to PATH） ^& pause ^& exit /b)
 
 echo 安裝 / 更新 pymobiledevice3 ...
-%PY% -m pip install --quiet --upgrade pymobiledevice3
+%PY% -m pip install --quiet -r "%~dp0requirements.txt"
 echo 啟動 FakeGPS ...
 %PY% "%~dp0app.py"
 pause
