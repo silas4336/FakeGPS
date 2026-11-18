@@ -15,6 +15,7 @@ import queue
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -35,7 +36,8 @@ PYEXE = sys.executable
 
 # 執行期狀態
 _tunnel = {"proc": None, "host": None, "port": None, "step": None}
-_sim = {"proc": None}
+_sim = {"proc": None, "err": None, "started": None, "duration": None}
+_last = {"lat": None, "lon": None}  # 最近一次送出的位置，路線的預設起點
 
 
 # ───────── shell ─────────
@@ -125,7 +127,11 @@ def route_coords(start, end, mode):
         return [tuple(start), tuple(end)]
 
 
-def make_gpx(route, mps, interval=1.0):
+MAX_GPX_POINTS = 5000
+
+
+def gpx_points(route, mps, interval=1.0):
+    """沿路線每 interval 秒取一點。回傳 (點列, 路線總長 m, 是否因點數上限被截斷)。"""
     from math import radians, sin, cos, asin, sqrt
     def dist(a, b):
         la1, lo1, la2, lo2 = map(radians, [a[0], a[1], b[0], b[1]])
@@ -139,9 +145,9 @@ def make_gpx(route, mps, interval=1.0):
 
     def interp(t):
         if t <= 0:
-            return route[0]
+            return tuple(route[0])
         if t >= total:
-            return route[-1]
+            return tuple(route[-1])
         i = 1
         while i < len(cum) and cum[i] < t:
             i += 1
@@ -150,11 +156,22 @@ def make_gpx(route, mps, interval=1.0):
         a, b = route[i-1], route[i]
         return (a[0] + (b[0]-a[0])*f, a[1] + (b[1]-a[1])*f)
 
-    n = min(int(total / step), 5000)
+    # ponytail: 沿用原本 5000 點上限（每秒一點 ≈ 83 分鐘），超過就截斷並回報給前端
+    n = int(total / step)
+    truncated = n > MAX_GPX_POINTS
+    n = min(n, MAX_GPX_POINTS)
+    pts = [interp(k * step) for k in range(max(n, 1) + 1)]
+    if not truncated and pts[-1] != tuple(route[-1]):
+        pts.append(tuple(route[-1]))  # 原本停在離終點不到一步處，終點從未送出
+    return pts, total, truncated
+
+
+def make_gpx(route, mps, interval=1.0, pts=None):
+    if pts is None:
+        pts = gpx_points(route, mps, interval)[0]
     lines = ['<?xml version="1.0" encoding="UTF-8"?>', '<gpx version="1.1" creator="FakeGPS">', "<trk><trkseg>"]
     base = time.time()
-    for k in range(max(n, 1) + 1):
-        c = interp(k * step)
+    for k, c in enumerate(pts):
         t = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(base + k * interval))
         lines.append(f'<trkpt lat="{c[0]}" lon="{c[1]}"><time>{t}</time></trkpt>')
     lines += ["</trkseg></trk>", "</gpx>"]
@@ -294,34 +311,49 @@ def set_location(lat, lon):
     if not (proc_alive(_tunnel["proc"]) and _tunnel["host"]):
         return {"ok": False, "error": "請先連線手機"}
     stop_sim()
-    proc = subprocess.Popen(
-        _device_cmds(_tunnel["host"], _tunnel["port"], lat=lat, lon=lon)["set"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    _sim["proc"] = proc
+    proc = _spawn_sim(_device_cmds(_tunnel["host"], _tunnel["port"], lat=lat, lon=lon)["set"])
     time.sleep(1.0)
-    if proc.poll() is not None:
-        return {"ok": False, "error": "設定失敗，tunnel 可能已斷"}
-    return {"ok": True}
+    if proc.poll() is not None and proc.returncode != 0:
+        detail = _sim_error()
+        return {"ok": False, "error": "設定失敗，tunnel 可能已斷：" + hint_for(detail, "請重新連線"), "detail": detail}
+    _last.update(lat=lat, lon=lon)
+    # 1 秒內沒報錯只代表指令已送出；無法從手機端回讀位置確認
+    return {"ok": True, "confirmed": False}
+
+
+def _spawn_sim(cmd):
+    err = tempfile.TemporaryFile()  # 不用 PIPE：長駐程序輸出多時 pipe 會塞住
+    _sim["proc"], _sim["err"] = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err), err
+    return _sim["proc"]
+
+
+def _sim_error():
+    if not _sim["err"]:
+        return ""
+    _sim["err"].seek(0)
+    return _sim["err"].read().decode("utf-8", "replace").strip()
 
 
 def play_route(coords, mps):
     if not (proc_alive(_tunnel["proc"]) and _tunnel["host"]):
         return {"ok": False, "error": "請先連線手機"}
-    ROUTE_GPX.write_text(make_gpx(coords, mps), encoding="utf-8")
+    pts, total, truncated = gpx_points(coords, mps)
+    ROUTE_GPX.write_text(make_gpx(coords, mps, pts=pts), encoding="utf-8")
     stop_sim()
-    proc = subprocess.Popen(
-        _device_cmds(_tunnel["host"], _tunnel["port"], gpx=ROUTE_GPX)["play"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    _sim["proc"] = proc
-    return {"ok": True}
+    _spawn_sim(_device_cmds(_tunnel["host"], _tunnel["port"], gpx=ROUTE_GPX)["play"])
+    _sim.update(started=time.time(), duration=len(pts) - 1, path=pts)
+    _last.update(lat=pts[-1][0], lon=pts[-1][1])
+    return {"ok": True, "path": pts, "distance_m": round(total), "duration_s": len(pts) - 1,
+            "truncated": truncated}
 
 
 def stop_sim():
     if proc_alive(_sim["proc"]):
         _sim["proc"].terminate()
-    _sim["proc"] = None
+        if _sim.get("path"):  # 路線中途停下：最近位置是當下走到的點，不是終點
+            p = _sim["path"][min(int(time.time() - _sim["started"]), len(_sim["path"]) - 1)]
+            _last.update(lat=p[0], lon=p[1])
+    _sim.update(proc=None, started=None, duration=None, path=None)
 
 
 def clear_location():
@@ -340,6 +372,9 @@ def status():
         "tunnel_up": bool(proc_alive(_tunnel["proc"]) and _tunnel["host"]),
         "simulating": bool(proc_alive(_sim["proc"])),
         "step": _tunnel["step"],
+        "last": _last if _last["lat"] is not None else None,
+        "route_elapsed": round(time.time() - _sim["started"]) if _sim["started"] and proc_alive(_sim["proc"]) else None,
+        "route_duration": _sim["duration"] if proc_alive(_sim["proc"]) else None,
     }
 
 
@@ -403,8 +438,14 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, r)
             if u.path == "/api/clear":
                 return self._send(200, clear_location())
+            if u.path == "/api/stop":
+                stop_sim()
+                return self._send(200, {"ok": True})
             if u.path == "/api/route":
-                coords = route_coords((b["slat"], b["slon"]), (b["elat"], b["elon"]), b.get("mode", "walk"))
+                start = (b["slat"], b["slon"]) if b.get("slat") is not None else (_last["lat"], _last["lon"])
+                if start[0] is None:
+                    return self._send(200, {"ok": False, "error": "沒有起點：先設定一次位置，或用「設為起點」"})
+                coords = route_coords(start, (b["elat"], b["elon"]), b.get("mode", "walk"))
                 mps = {"walk": 1.4, "bike": 5.5, "drive": 13.9}.get(b.get("mode", "walk"), 1.4)
                 return self._send(200, play_route(coords, mps))
             if u.path == "/api/bookmarks/add":

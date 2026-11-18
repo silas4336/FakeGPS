@@ -40,6 +40,7 @@
   [hidden]{display:none!important}   @keyframes pulse{to{opacity:.55}}
   .err{margin-top:8px;padding:8px 10px;border:1px solid var(--red);border-radius:9px;font-size:12px}
   .err pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;font-size:11px;color:var(--dim);margin:6px 0 0}
+  .bar{height:6px;border-radius:3px;background:#1b2330;margin-top:6px;overflow:hidden} .bar i{display:block;height:100%;width:0;background:var(--orange);transition:width 1s linear}
   #toast.show{opacity:1} .muted{color:var(--dim);font-size:11.5px;margin-top:6px}
 </style>
 </head>
@@ -85,11 +86,13 @@
       <div class="seg" id="speed">
         <button data-m="walk" class="sel">步行</button><button data-m="bike">騎車</button><button data-m="drive">開車</button>
       </div>
-      <div class="muted" id="route-info">起點：<b id="s-start">目前位置</b> → 終點：<b id="s-end">選一個點</b></div>
+      <div class="muted" id="route-info">起點：<b id="s-start">最近設定的位置</b> → 終點：<b id="s-end">選一個點</b></div>
       <div class="row" style="margin-top:8px">
-        <button class="g" id="b-start">設選取點為起點</button>
+        <button class="g" id="b-start">設為起點</button>
         <button id="b-go">▶ 開始移動</button>
+        <button class="g" id="b-stop" hidden>■ 停止</button>
       </div>
+      <div id="route-run" hidden><div class="muted" id="route-meta"></div><div class="bar"><i id="route-bar"></i></div></div>
     </div>
   </div>
 </div>
@@ -97,7 +100,7 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const $=s=>document.querySelector(s); let map,marker,startMarker,picked=null,pickedLabel="",routeStart=null,speed="walk",tmr=null,lastReq=0;
+const $=s=>document.querySelector(s); let routeLine=null,mover=null,map,marker,startMarker,picked=null,pickedLabel="",routeStart=null,lastPos=null,run=null,speed="walk",tmr=null,lastReq=0;
 function toast(m,ok=true){const t=$('#toast');t.textContent=m;t.style.borderColor=ok?'var(--green)':'var(--red)';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
 const api=(p,o)=>fetch(p,o).then(r=>r.json());
 function pick(lat,lon,label){picked=[lat,lon];pickedLabel=label||"";$('#lat').value=(+lat).toFixed(6);$('#lon').value=(+lon).toFixed(6);
@@ -108,13 +111,15 @@ async function refresh(){const s=await api('/api/status');$('#os').textContent=s
   $('#d-dev').className='dot '+(s.device_connected?'on':'off');$('#t-dev').textContent=s.device_connected?('手機：'+s.device_name):'未偵測到手機';
   $('#d-tun').className='dot '+(s.tunnel_up?'on':'');$('#t-tun').textContent=s.tunnel_up?'已連線':'未連線';
   $('#d-sim').className='dot '+(s.simulating?'on':'');$('#t-sim').textContent=s.simulating?'模擬中':'未模擬';
+  lastPos=s.last?[s.last.lat,s.last.lon]:null;if(!routeStart)$('#s-start').textContent=lastPos?'最近設定的位置':'尚未設定（先設定一次位置）';
+  if(run&&!s.simulating)endRun(run.elapsed()>=run.dur?'已抵達終點':'已停止');
   $('#b-conn').disabled=!s.device_connected||s.tunnel_up;
   $('#hint').textContent=!s.device_connected?'⚠️ 插上 iPhone、解鎖、信任（Windows 需 Apple 裝置 app）':(s.tunnel_up?'✓ 可以設定位置了':'按上方連線（需系統管理員）');
 }
 async function loadBM(){const {bookmarks,recents}=await api('/api/bookmarks');
   const mk=(arr,box,sec,del)=>{const b=$(box);if(!arr.length){$(sec).style.display='none';return;}$(sec).style.display='';b.innerHTML='';
     arr.forEach(it=>{const e=document.createElement('span');e.className='chip';e.innerHTML=`<span>📍 ${it.name||(it.lat.toFixed(3)+','+it.lon.toFixed(3))}</span>`+(del?'<span class="x">✕</span>':'');
-      e.querySelector('span').onclick=async()=>{pick(it.lat,it.lon,it.name);const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:it.lat,lon:it.lon,label:it.name})});toast(r.ok?('已切換：'+it.name):('失敗：'+(r.error||'')),r.ok);refresh();};
+      e.querySelector('span').onclick=async()=>{pick(it.lat,it.lon,it.name);const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:it.lat,lon:it.lon,label:it.name})});toast(r.ok?('已送出：'+it.name):('失敗：'+(r.error||'')),r.ok);refresh();};
       if(del)e.querySelector('.x').onclick=async(ev)=>{ev.stopPropagation();await api('/api/bookmarks/del',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:it.name})});loadBM();};
       b.appendChild(e);});};
   mk(bookmarks,'#bm','#bm-sec',true); mk(recents,'#rc','#rc-sec',false);}
@@ -133,15 +138,27 @@ async function doSearch(){const q=$('#q').value.trim();if(q.length<2){$('#result
 $('#q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,350);});
 function cur(){const a=parseFloat($('#lat').value),b=parseFloat($('#lon').value);if(isNaN(a)||isNaN(b))return null;if(a<-90||a>90||b<-180||b>180)return 'range';return[a,b];}
 $('#b-set').onclick=async()=>{const p=cur();if(!p){toast('請先選地點或輸入座標',false);return;}if(p==='range'){toast('座標超出範圍',false);return;}
-  const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:p[0],lon:p[1],label:pickedLabel||(p[0]+','+p[1])})});toast(r.ok?'已設定':('失敗：'+(r.error||'')),r.ok);refresh();loadBM();};
+  const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:p[0],lon:p[1],label:pickedLabel||(p[0]+','+p[1])})});toast(r.ok?'已送出位置（請在手機地圖確認）':('失敗：'+(r.error||'')),r.ok);refresh();loadBM();};
 $('#b-clear').onclick=async()=>{const r=await api('/api/clear',{method:'POST'});toast('已清除，恢復真實 GPS');refresh();};
 $('#b-star').onclick=async()=>{const p=cur();if(!p||p==='range'){toast('請先選一個地點',false);return;}const name=prompt('書籤名稱：',pickedLabel||'');if(!name)return;
   await api('/api/bookmarks/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,lat:p[0],lon:p[1]})});toast('已加書籤：'+name);loadBM();};
 document.querySelectorAll('#speed button').forEach(b=>b.onclick=()=>{speed=b.dataset.m;document.querySelectorAll('#speed button').forEach(x=>x.classList.toggle('sel',x===b));});
 $('#b-start').onclick=()=>{if(!picked){toast('先在地圖選一個點',false);return;}routeStart=picked.slice();if(startMarker)startMarker.setLatLng(routeStart);else startMarker=L.marker(routeStart,{opacity:.7}).addTo(map);$('#s-start').textContent=pickedLabel||'選取點';toast('起點已設');};
-$('#b-go').onclick=async()=>{if(!picked){toast('請先選一個終點',false);return;}const s=routeStart||picked;
-  const r=await api('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slat:s[0],slon:s[1],elat:picked[0],elon:picked[1],mode:speed})});
-  toast(r.ok?('開始移動（'+speed+'）'):('失敗：'+(r.error||'')),r.ok);refresh();};
+const fmtDur=t=>t<60?t+' 秒':t<3600?Math.round(t/60)+' 分':(t/3600).toFixed(1)+' 小時';
+function endRun(msg){if(!run)return;clearInterval(run.tick);run=null;$('#b-stop').hidden=true;$('#route-meta').textContent+=' · '+msg;$('#route-bar').style.width='100%';}
+$('#b-go').onclick=async()=>{if(!picked){toast('請先選一個終點',false);return;}const s=routeStart;
+  const r=await api('/api/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({slat:s?s[0]:null,slon:s?s[1]:null,elat:picked[0],elon:picked[1],mode:speed})});
+  if(!r.ok){toast('失敗：'+(r.error||''),false);return;}
+  if(run)clearInterval(run.tick);if(routeLine)routeLine.remove();if(mover)mover.remove();
+  routeLine=L.polyline(r.path,{color:'#ff9f0a',weight:4,opacity:.85}).addTo(map);map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
+  mover=L.circleMarker(r.path[0],{radius:7,color:'#fff',weight:2,fillColor:'#ff9f0a',fillOpacity:1}).addTo(map);
+  const t0=Date.now(),info=(r.distance_m/1000).toFixed(2)+' km · 預估 '+fmtDur(r.duration_s)+(r.truncated?' · ⚠️ 路線過長，只模擬前 '+fmtDur(r.duration_s):'');
+  run={dur:r.duration_s,elapsed:()=>Math.round((Date.now()-t0)/1000),tick:setInterval(()=>{const e=Math.min(run.elapsed(),run.dur);
+    mover.setLatLng(r.path[e]);$('#route-bar').style.width=(run.dur?e/run.dur*100:100)+'%';$('#route-meta').textContent=info+' · '+fmtDur(e)+' / '+fmtDur(run.dur);
+    if(e>=run.dur)endRun('已抵達終點');},1000)};
+  $('#route-meta').textContent=info;$('#route-bar').style.width='0';$('#route-run').hidden=false;$('#b-stop').hidden=false;
+  toast('已送出路線（'+speed+'）');refresh();};
+$('#b-stop').onclick=async()=>{await api('/api/stop',{method:'POST'});endRun('已停止');toast('已停止移動');refresh();};
 
 map=L.map('map').setView([25.0338,121.5645],12);
 const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'}).addTo(map);

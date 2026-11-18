@@ -135,5 +135,80 @@ class StartTunnelWithFakeTest(unittest.TestCase):
         self.assertIn("逾時", r["error"])
 
 
+class GpxEndpointTest(unittest.TestCase):
+    def test_route_ends_exactly_at_destination(self):
+        pts, total, truncated = app.gpx_points([(LAT0, LON0), (LAT1, LON0)], 1.4)
+        self.assertEqual(pts[-1], (LAT1, LON0))
+        self.assertAlmostEqual(total, 111.19, places=1)
+        self.assertFalse(truncated)
+
+    def test_long_route_reports_truncation(self):
+        pts, _, truncated = app.gpx_points([(LAT0, LON0), (LAT0 + 1, LON0)], 1.4)
+        self.assertTrue(truncated)
+        self.assertEqual(len(pts), app.MAX_GPX_POINTS + 1)
+
+
+@mock.patch.dict(os.environ, {"PYTHONPATH": FAKE})
+class MovementWithFakeTest(unittest.TestCase):
+    """用假 pymobiledevice3 跑 HTTP 端點：set → route（預設起點）→ stop。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        cls.tmp = Path(tempfile.mkdtemp())
+        cls.patches = [mock.patch.object(app, n, cls.tmp / f) for n, f in
+                       (("RECENTS", "r.json"), ("BOOKMARKS", "b.json"), ("ROUTE_GPX", "r.gpx"))]
+        cls.patches.append(mock.patch.object(app, "route_coords", lambda s, e, m: [tuple(s), tuple(e)]))
+        for p in cls.patches:
+            p.start()
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), app.H)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        for p in cls.patches:
+            p.stop()
+
+    def tearDown(self):
+        app.stop_sim()
+        if app.proc_alive(app._tunnel["proc"]):
+            app._tunnel["proc"].kill()
+        app._tunnel.update(proc=None, host=None, port=None, step=None)
+        app._last.update(lat=None, lon=None)
+
+    def post(self, path, body=None):
+        import json
+        import urllib.request
+        req = urllib.request.Request(f"http://127.0.0.1:{self.srv.server_port}{path}",
+                                     data=json.dumps(body or {}).encode(),
+                                     headers={"Content-Type": "application/json"})
+        return json.load(urllib.request.urlopen(req))
+
+    def test_route_without_start_or_last_position_errors(self):
+        r = self.post("/api/route", {"elat": LAT1, "elon": LON0})
+        self.assertFalse(r["ok"])
+        self.assertIn("沒有起點", r["error"])
+
+    def test_set_then_route_from_last_position_then_stop(self):
+        self.assertTrue(self.post("/api/start")["ok"])
+        r = self.post("/api/set", {"lat": LAT0, "lon": LON0})
+        self.assertEqual(r, {"ok": True, "confirmed": False})
+        r = self.post("/api/route", {"elat": LAT1, "elon": LON0, "mode": "walk"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["path"][0], [LAT0, LON0])
+        self.assertEqual(r["path"][-1], [LAT1, LON0])
+        self.assertEqual(r["duration_s"], len(r["path"]) - 1)
+        st = app.status()
+        self.assertTrue(st["simulating"])
+        self.assertEqual(st["route_duration"], r["duration_s"])
+        self.assertEqual(self.post("/api/stop"), {"ok": True})
+        self.assertFalse(app.status()["simulating"])
+        # 剛開始就停 → 最近位置應在起點附近，而非終點
+        self.assertAlmostEqual(app._last["lat"], LAT0, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()
