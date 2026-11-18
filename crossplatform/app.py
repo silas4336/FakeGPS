@@ -24,15 +24,28 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# ── frozen-exe 自我分派 ──
+# 被 PyInstaller 凍成單一 .exe 後，sys.executable 是 FakeGPS.exe 而非 python，
+# 無法用 `-m pymobiledevice3` 呼叫子程序。解法：凍結時以 sentinel 重新呼叫自己，
+# 在這裡轉去執行內建的 pymobiledevice3 CLI（等同 python -m pymobiledevice3）。
+if getattr(sys, "frozen", False) and len(sys.argv) > 1 and sys.argv[1] == "__pmd3__":
+    import runpy
+    sys.argv = ["pymobiledevice3", *sys.argv[2:]]
+    runpy.run_module("pymobiledevice3", run_name="__main__", alter_sys=True)
+    sys.exit(0)
+
 PORT = 8765
-APP_DIR = Path(__file__).resolve().parent
+# frozen onefile 時，打包進去的資源（index.html）會解壓到 sys._MEIPASS
+APP_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATE_DIR = Path.home() / ".fakegps"
 STATE_DIR.mkdir(exist_ok=True)
 BOOKMARKS = STATE_DIR / "bookmarks.json"
 RECENTS = STATE_DIR / "recents.json"
 ROUTE_GPX = STATE_DIR / "route.gpx"
 IS_WIN = platform.system() == "Windows"
-PYEXE = sys.executable
+# pymobiledevice3 子程序呼叫前綴：script 走 `-m`，frozen .exe 走自我分派 sentinel
+PMD3 = ([sys.executable, "__pmd3__"] if getattr(sys, "frozen", False)
+        else [sys.executable, "-m", "pymobiledevice3"])
 
 # 執行期狀態
 _tunnel = {"proc": None, "host": None, "port": None, "step": None}
@@ -198,7 +211,7 @@ def make_gpx(route, mps, interval=1.0, pts=None):
 
 # ───────── 裝置動作 ─────────
 def pmd3(*args):
-    return [PYEXE, "-m", "pymobiledevice3", *args]
+    return [*PMD3, *args]
 
 
 def _device_cmds(host, port, lat=None, lon=None, gpx=None):

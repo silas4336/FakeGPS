@@ -25,6 +25,7 @@ jobs:
           pyinstaller --onefile --name FakeGPS
           --add-data "crossplatform/index.html;."
           --collect-all pymobiledevice3
+          --recursive-copy-metadata pymobiledevice3
           crossplatform/app.py
       - uses: actions/upload-artifact@v4
         with:
