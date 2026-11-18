@@ -41,6 +41,10 @@
   .err{margin-top:8px;padding:8px 10px;border:1px solid var(--red);border-radius:9px;font-size:12px}
   .err pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:160px;overflow:auto;font-size:11px;color:var(--dim);margin:6px 0 0}
   .bar{height:6px;border-radius:3px;background:#1b2330;margin-top:6px;overflow:hidden} .bar i{display:block;height:100%;width:0;background:var(--orange);transition:width 1s linear}
+  #pad{position:absolute;right:14px;bottom:28px;z-index:1000;display:flex;flex-direction:column;align-items:center;gap:6px;
+       padding:10px;background:var(--panel);backdrop-filter:blur(20px);border:1px solid var(--line);border-radius:16px}
+  #pad div{display:flex;gap:6px} #pad button{width:42px;height:38px;padding:0} #pad label{font-size:11px;color:var(--dim)}
+  #pad input{width:48px;padding:3px 5px;font-size:12px} #dev-sel{width:100%;margin:4px 0;padding:6px;border-radius:8px;background:#0d0f14;color:var(--txt);border:1px solid var(--line)}
   #toast.show{opacity:1} .muted{color:var(--dim);font-size:11.5px;margin-top:6px}
 </style>
 </head>
@@ -53,6 +57,7 @@
 
     <div>
       <div class="srow"><span id="d-dev" class="dot"></span><span id="t-dev">偵測中…</span></div>
+      <select id="dev-sel" hidden title="選擇要連線的裝置"></select>
       <div class="srow"><span id="d-tun" class="dot"></span><span id="t-tun">未連線</span></div>
       <div class="srow"><span id="d-sim" class="dot"></span><span id="t-sim">未模擬</span></div>
       <button class="w" id="b-conn" style="margin-top:8px">🔌 連線手機</button>
@@ -97,10 +102,16 @@
   </div>
 </div>
 <div id="toast"></div>
+<div id="pad" title="微調位置（也可用方向鍵）">
+  <button class="g" data-d="1,0">▲</button>
+  <div><button class="g" data-d="0,-1">◀</button><button class="g" data-d="0,0" title="置中">◎</button><button class="g" data-d="0,1">▶</button></div>
+  <button class="g" data-d="-1,0">▼</button>
+  <label>步距 <input id="nudge-m" type="number" min="1" max="50" value="4"> m</label>
+</div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
-const $=s=>document.querySelector(s); let routeLine=null,mover=null,map,marker,startMarker,picked=null,pickedLabel="",routeStart=null,lastPos=null,run=null,speed="walk",tmr=null,lastReq=0;
+const $=s=>document.querySelector(s); let simOn=false,nudgeBusy=false,nudgeNext=null,routeLine=null,mover=null,map,marker,startMarker,picked=null,pickedLabel="",routeStart=null,lastPos=null,run=null,speed="walk",tmr=null,lastReq=0;
 function toast(m,ok=true){const t=$('#toast');t.textContent=m;t.style.borderColor=ok?'var(--green)':'var(--red)';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);}
 const api=(p,o)=>fetch(p,o).then(r=>r.json());
 function pick(lat,lon,label){picked=[lat,lon];pickedLabel=label||"";$('#lat').value=(+lat).toFixed(6);$('#lon').value=(+lon).toFixed(6);
@@ -109,6 +120,9 @@ function pick(lat,lon,label){picked=[lat,lon];pickedLabel=label||"";$('#lat').va
 
 async function refresh(){const s=await api('/api/status');$('#os').textContent=s.os;
   $('#d-dev').className='dot '+(s.device_connected?'on':'off');$('#t-dev').textContent=s.device_connected?('手機：'+s.device_name):'未偵測到手機';
+  const sel=$('#dev-sel'),devs=s.devices||[];sel.hidden=devs.length<2;sel.disabled=s.tunnel_up;
+  if(sel.dataset.k!==JSON.stringify(devs)){sel.dataset.k=JSON.stringify(devs);sel.replaceChildren(...devs.map(d=>new Option(d.name+(d.version?' (iOS '+d.version+')':''),d.udid)));}
+  sel.value=s.device_udid||'';simOn=s.simulating;
   $('#d-tun').className='dot '+(s.tunnel_up?'on':'');$('#t-tun').textContent=s.tunnel_up?'已連線':'未連線';
   $('#d-sim').className='dot '+(s.simulating?'on':'');$('#t-sim').textContent=s.simulating?'模擬中':'未模擬';
   lastPos=s.last?[s.last.lat,s.last.lon]:null;if(!routeStart)$('#s-start').textContent=lastPos?'最近設定的位置':'尚未設定（先設定一次位置）';
@@ -118,7 +132,8 @@ async function refresh(){const s=await api('/api/status');$('#os').textContent=s
 }
 async function loadBM(){const {bookmarks,recents}=await api('/api/bookmarks');
   const mk=(arr,box,sec,del)=>{const b=$(box);if(!arr.length){$(sec).style.display='none';return;}$(sec).style.display='';b.innerHTML='';
-    arr.forEach(it=>{const e=document.createElement('span');e.className='chip';e.innerHTML=`<span>📍 ${it.name||(it.lat.toFixed(3)+','+it.lon.toFixed(3))}</span>`+(del?'<span class="x">✕</span>':'');
+    arr.forEach(it=>{const e=document.createElement('span');e.className='chip';const t=document.createElement('span');t.textContent='📍 '+(it.name||(it.lat.toFixed(3)+','+it.lon.toFixed(3)));e.append(t);
+      if(del){const x=document.createElement('span');x.className='x';x.textContent='✕';e.append(x);}
       e.querySelector('span').onclick=async()=>{pick(it.lat,it.lon,it.name);const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:it.lat,lon:it.lon,label:it.name})});toast(r.ok?('已送出：'+it.name):('失敗：'+(r.error||'')),r.ok);refresh();};
       if(del)e.querySelector('.x').onclick=async(ev)=>{ev.stopPropagation();await api('/api/bookmarks/del',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:it.name})});loadBM();};
       b.appendChild(e);});};
@@ -134,7 +149,8 @@ $('#b-conn').onclick=async()=>{$('#b-conn').disabled=true;$('#b-conn').textConte
   else{showStep(r.step,true);$('#err-msg').textContent=r.error||'失敗';$('#err-detail').textContent=r.detail||'（無輸出）';$('#err').hidden=false;toast('連線失敗',false);}
   refresh();};
 async function doSearch(){const q=$('#q').value.trim();if(q.length<2){$('#results').innerHTML='';return;}const my=++lastReq;const r=await api('/api/search?q='+encodeURIComponent(q));if(my!==lastReq)return;
-  $('#results').innerHTML='';(r.results||[]).forEach(it=>{const e=document.createElement('div');e.className='res';e.innerHTML=`<div>${it.name}</div>`+(it.label&&it.label!==it.name?`<small>${it.label}</small>`:'');e.onclick=()=>pick(it.lat,it.lon,it.name);$('#results').appendChild(e);});}
+  $('#results').innerHTML='';(r.results||[]).forEach(it=>{const e=document.createElement('div');e.className='res';const n=document.createElement('div');n.textContent=it.name;e.append(n);
+    if(it.label&&it.label!==it.name){const sm=document.createElement('small');sm.textContent=it.label;e.append(sm);}e.onclick=()=>pick(it.lat,it.lon,it.name);$('#results').appendChild(e);});}
 $('#q').addEventListener('input',()=>{clearTimeout(tmr);tmr=setTimeout(doSearch,350);});
 function cur(){const a=parseFloat($('#lat').value),b=parseFloat($('#lon').value);if(isNaN(a)||isNaN(b))return null;if(a<-90||a>90||b<-180||b>180)return 'range';return[a,b];}
 $('#b-set').onclick=async()=>{const p=cur();if(!p){toast('請先選地點或輸入座標',false);return;}if(p==='range'){toast('座標超出範圍',false);return;}
@@ -165,6 +181,17 @@ const osm=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZ
 const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'© Esri'});
 L.control.layers({"地圖":osm,"衛星":sat}).addTo(map);
 map.on('click',e=>pick(e.latlng.lat,e.latlng.lng,'地圖選點'));
+$('#dev-sel').onchange=async e=>{const r=await api('/api/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({udid:e.target.value})});if(!r.ok)toast(r.error,false);refresh();};
+// 搖桿：同一時間最多一個 /api/set 在途，期間的點只保留最新一個 → 每秒最多一個子程序
+async function sendNudge(p){if(nudgeBusy){nudgeNext=p;return;}nudgeBusy=true;
+  const r=await api('/api/set',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:p[0],lon:p[1],nudge:true})});
+  if(!r.ok)toast('失敗：'+(r.error||''),false);nudgeBusy=false;if(nudgeNext){const n=nudgeNext;nudgeNext=null;sendNudge(n);}}
+function nudge(dy,dx){if(!picked){toast('先選一個點',false);return;}if(!dy&&!dx){map.setView(picked,17);return;}
+  const d=(+$('#nudge-m').value||4)/111000,lat=picked[0]+dy*d,lon=picked[1]+dx*d/Math.cos(picked[0]*Math.PI/180);
+  pick(lat,lon,pickedLabel);if(simOn&&!run)sendNudge([lat,lon]);}  // 同 Swift 版：模擬中才送到手機；路線播放中不打斷
+document.querySelectorAll('#pad button').forEach(b=>b.onclick=()=>{const [dy,dx]=b.dataset.d.split(',').map(Number);nudge(dy,dx);});
+const KEYS={ArrowUp:[1,0],ArrowDown:[-1,0],ArrowLeft:[0,-1],ArrowRight:[0,1]};
+document.addEventListener('keydown',e=>{if(!KEYS[e.key]||/INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName))return;e.preventDefault();nudge(...KEYS[e.key]);});
 refresh();loadBM();setInterval(refresh,4000);
 </script>
 </body>

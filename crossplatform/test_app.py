@@ -187,6 +187,15 @@ class MovementWithFakeTest(unittest.TestCase):
                                      headers={"Content-Type": "application/json"})
         return json.load(urllib.request.urlopen(req))
 
+    def test_nudge_set_skips_recents(self):
+        import json
+        self.assertTrue(self.post("/api/start")["ok"])
+        self.post("/api/set", {"lat": LAT0, "lon": LON0, "label": "A"})
+        self.post("/api/set", {"lat": LAT1, "lon": LON0, "nudge": True})
+        rec = json.loads(app.RECENTS.read_text(encoding="utf-8"))
+        self.assertEqual([r["lat"] for r in rec].count(LAT1), 0)
+        self.assertEqual(app._last["lat"], LAT1)
+
     def test_route_without_start_or_last_position_errors(self):
         r = self.post("/api/route", {"elat": LAT1, "elon": LON0})
         self.assertFalse(r["ok"])
@@ -212,25 +221,50 @@ class MovementWithFakeTest(unittest.TestCase):
 
 class StatusPollingTest(unittest.TestCase):
     def setUp(self):
-        app._dev.update(info=None, at=None)
+        app._dev.update(list=[], at=None, udid=None)
 
     tearDown = setUp
 
     def test_status_reuses_cached_device(self):
         dev = {"udid": "U", "name": "N", "version": "18"}
-        with mock.patch.object(app, "detect_device", return_value=dev) as det:
+        with mock.patch.object(app, "detect_devices", return_value=[dev]) as det:
             for _ in range(5):
                 self.assertEqual(app.status()["device_name"], "N")
         self.assertEqual(det.call_count, 1)
 
     def test_cache_expires_and_connect_forces_fresh(self):
-        with mock.patch.object(app, "detect_device", return_value=None) as det:
+        with mock.patch.object(app, "detect_devices", return_value=[]) as det:
             app.status()
             app._dev["at"] -= app.DEVICE_TTL + 1
             app.status()
             self.assertEqual(det.call_count, 2)
             app.start_tunnel()
             self.assertEqual(det.call_count, 3)
+
+
+@mock.patch.dict(os.environ, {"PYTHONPATH": FAKE, "FAKE_DEVICES": "2"})
+class MultiDeviceTest(unittest.TestCase):
+    def setUp(self):
+        app._dev.update(list=[], at=None, udid=None)
+
+    def tearDown(self):
+        if app.proc_alive(app._tunnel["proc"]):
+            app._tunnel["proc"].kill()
+        app._tunnel.update(proc=None, host=None, port=None, step=None, dev=None)
+        self.setUp()
+
+    def test_lists_all_and_selected_one_is_used_for_tunnel(self):
+        st = app.status()
+        self.assertEqual([d["udid"] for d in st["devices"]], ["0000FAKE-1", "0000FAKE-2"])
+        self.assertEqual(st["device_udid"], "0000FAKE-1")
+        self.assertEqual(app.select_device("0000FAKE-2"), {"ok": True})
+        self.assertEqual(app.select_device("nope")["ok"], False)
+        with mock.patch.object(app.subprocess, "Popen", wraps=app.subprocess.Popen) as po:
+            self.assertTrue(app.start_tunnel()["ok"])
+        tunnel = next(c.args[0] for c in po.call_args_list if "start-tunnel" in c.args[0])
+        self.assertIn("0000FAKE-2", tunnel)
+        self.assertEqual(app.status()["device_name"], "Fake iPhone 2")
+        self.assertFalse(app.select_device("0000FAKE-1")["ok"])  # 連線中不能切換
 
 
 if __name__ == "__main__":

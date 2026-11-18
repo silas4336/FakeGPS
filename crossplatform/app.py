@@ -50,32 +50,39 @@ def run(args, timeout=90):
         return 1, "", str(e)
 
 
-def detect_device():
-    """用 usbmux list（跨平台，免 libimobiledevice）取第一台裝置。"""
+def detect_devices():
+    """用 usbmux list（跨平台，免 libimobiledevice）列出裝置；有 USB 的只列 USB。"""
     rc, out, _ = run(["usbmux", "list"])
     if rc != 0:
-        return None
+        return []
     try:
         devs = json.loads(out)
     except Exception:  # noqa: BLE001
-        return None
+        return []
     usb = [d for d in devs if d.get("ConnectionType") == "USB"] or devs
-    if not usb:
-        return None
-    d = usb[0]
-    return {"udid": d.get("Identifier"), "name": d.get("DeviceName") or d.get("Identifier"),
-            "version": d.get("ProductVersion")}
+    return [{"udid": d.get("Identifier"), "name": d.get("DeviceName") or d.get("Identifier"),
+             "version": d.get("ProductVersion")} for d in usb]
 
 
 DEVICE_TTL = 15  # 秒；status 輪詢最多這麼久才重跑一次 usbmux list
-_dev = {"info": None, "at": None}
+_dev = {"list": [], "at": None, "udid": None}  # udid：使用者選的裝置，None＝第一台
 
 
 def device(fresh=False):
-    """快取 detect_device()：避免每次輪詢都開一個 pymobiledevice3 子程序。"""
+    """回傳選定（或第一台）裝置。快取偵測結果，避免每次輪詢都開一個 pymobiledevice3 子程序。"""
     if fresh or _dev["at"] is None or time.monotonic() - _dev["at"] > DEVICE_TTL:
-        _dev.update(info=detect_device(), at=time.monotonic())
-    return _dev["info"]
+        _dev.update(list=detect_devices(), at=time.monotonic())
+    devs = _dev["list"]
+    return next((d for d in devs if d["udid"] == _dev["udid"]), devs[0] if devs else None)
+
+
+def select_device(udid):
+    if proc_alive(_tunnel["proc"]) and _tunnel["host"]:
+        return {"ok": False, "error": "已連線中，無法切換裝置（請重新啟動程式後再選）"}
+    if not any(d["udid"] == udid for d in _dev["list"]):
+        return {"ok": False, "error": "找不到這台裝置"}
+    _dev["udid"] = udid
+    return {"ok": True}
 
 
 def proc_alive(p):
@@ -306,7 +313,7 @@ def start_tunnel():
             else:
                 msg = "tunnel 建立失敗（lockdown 與 remote 都試過）：" + hint_for(out, "請展開下方完整輸出查看原因")
             return _fail("tunnel", msg, out)
-        _tunnel["host"], _tunnel["port"] = rsd
+        _tunnel["host"], _tunnel["port"], _tunnel["dev"] = *rsd, dev
 
     _tunnel["step"] = "mount"
     rc, out, err = run(_device_cmds(_tunnel["host"], _tunnel["port"])["mount"][len(pmd3()):])
@@ -377,11 +384,13 @@ def clear_location():
 def status():
     tunnel_up = bool(proc_alive(_tunnel["proc"]) and _tunnel["host"])
     # tunnel 活著就代表裝置在，不必再偵測；否則用快取（最多 DEVICE_TTL 秒重偵測一次）
-    dev = _dev["info"] if tunnel_up else device()
+    dev = _tunnel.get("dev") if tunnel_up else device()
     return {
         "os": platform.system(),
         "device_connected": bool(dev),
         "device_name": dev["name"] if dev else None,
+        "device_udid": dev["udid"] if dev else None,
+        "devices": _dev["list"],
         "tunnel_up": tunnel_up,
         "simulating": bool(proc_alive(_sim["proc"])),
         "step": _tunnel["step"],
@@ -441,9 +450,11 @@ class H(BaseHTTPRequestHandler):
             b = self._body()
             if u.path == "/api/start":
                 return self._send(200, start_tunnel())
+            if u.path == "/api/select":
+                return self._send(200, select_device(b.get("udid")))
             if u.path == "/api/set":
                 r = set_location(b["lat"], b["lon"])
-                if r.get("ok"):
+                if r.get("ok") and not b.get("nudge"):  # 搖桿微調不灌爆「最近使用」
                     rec = jload(RECENTS)
                     rec = [x for x in rec if abs(x["lat"]-b["lat"]) > 1e-5 or abs(x["lon"]-b["lon"]) > 1e-5]
                     rec.insert(0, {"name": b.get("label", ""), "lat": b["lat"], "lon": b["lon"]})
