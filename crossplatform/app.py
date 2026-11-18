@@ -165,6 +165,19 @@ def rsd_args(tail):
     return ["developer", "dvt", "simulate-location", *tail, "--rsd", _tunnel["host"], str(_tunnel["port"])]
 
 
+def _tunnel_cmds(udid):
+    """不同 iOS 版本需要不同 tunnel 指令，依序嘗試。
+
+    iOS 17.4+（含 iOS 18 / 26+）實測必須用 `lockdown start-tunnel`；舊的
+    `remote start-tunnel -t usb` 在新版裝置會回 "No tunnel services discovered /
+    Device is not connected"，完全建不起來（已在 Windows 11 + iPhone iOS 27 實測）。
+    保留 remote 方式當作較舊 iOS 的 fallback。"""
+    return [
+        ["lockdown", "start-tunnel", "--udid", udid, "--script-mode"],
+        ["remote", "start-tunnel", "-t", "usb", "--udid", udid, "-p", "tcp", "--script-mode"],
+    ]
+
+
 def start_tunnel():
     dev = detect_device()
     if not dev:
@@ -172,32 +185,38 @@ def start_tunnel():
     if proc_alive(_tunnel["proc"]) and _tunnel["host"]:
         return {"ok": True, "rsd": f'{_tunnel["host"]} {_tunnel["port"]}'}
 
-    proc = subprocess.Popen(
-        [PYEXE, "-m", "pymobiledevice3", "remote", "start-tunnel",
-         "-t", "usb", "--udid", dev["udid"], "-p", "tcp", "--script-mode"],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-    )
-    _tunnel["proc"] = proc
-
-    rsd = None
-    deadline = time.time() + 30
-    while time.time() < deadline:
-        line = proc.stdout.readline()
-        if not line:
-            if proc.poll() is not None:
+    last = ""
+    for cmd in _tunnel_cmds(dev["udid"]):
+        proc = subprocess.Popen(
+            [PYEXE, "-m", "pymobiledevice3", *cmd],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        rsd = None
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            s = line.strip()
+            m = re.match(r"^([0-9a-fA-F:]+)\s+(\d+)$", s)
+            if m:
+                rsd = (m.group(1), m.group(2))
                 break
-            continue
-        m = re.match(r"^([0-9a-fA-F:]+)\s+(\d+)$", line.strip())
-        if m:
-            rsd = (m.group(1), m.group(2))
-            break
-    if not rsd:
-        return {"ok": False, "error": "tunnel 建立失敗或逾時（Windows 請確認以系統管理員執行、已裝 WinTUN/Apple 裝置）"}
-    _tunnel["host"], _tunnel["port"] = rsd
-    # 繼續吞掉後續輸出避免阻塞
-    threading.Thread(target=lambda: [None for _ in proc.stdout], daemon=True).start()
-    run(rsd_args_mount())
-    return {"ok": True, "rsd": f"{rsd[0]} {rsd[1]}"}
+            if s:
+                last = s
+        if rsd:
+            _tunnel["proc"] = proc
+            _tunnel["host"], _tunnel["port"] = rsd
+            # 繼續吞掉後續輸出避免阻塞
+            threading.Thread(target=lambda: [None for _ in proc.stdout], daemon=True).start()
+            run(rsd_args_mount())
+            return {"ok": True, "rsd": f"{rsd[0]} {rsd[1]}"}
+        if proc_alive(proc):
+            proc.terminate()
+    return {"ok": False,
+            "error": f"tunnel 建立失敗（Windows 請確認以系統管理員執行、已裝 Apple 裝置驅動）。最後訊息：{last[:200]}"}
 
 
 def rsd_args_mount():
