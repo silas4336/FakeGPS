@@ -22,15 +22,28 @@ import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# ── frozen-exe 自我分派 ──
+# 被 PyInstaller 凍成單一 .exe 後，sys.executable 是 FakeGPS.exe 而非 python，
+# 無法用 `-m pymobiledevice3` 呼叫子程序。解法：凍結時以 sentinel 重新呼叫自己，
+# 在這裡轉去執行內建的 pymobiledevice3 CLI（等同 python -m pymobiledevice3）。
+if getattr(sys, "frozen", False) and len(sys.argv) > 1 and sys.argv[1] == "__pmd3__":
+    import runpy
+    sys.argv = ["pymobiledevice3", *sys.argv[2:]]
+    runpy.run_module("pymobiledevice3", run_name="__main__", alter_sys=True)
+    sys.exit(0)
+
 PORT = 8765
-APP_DIR = Path(__file__).resolve().parent
+# frozen onefile 時，打包進去的資源（index.html）會解壓到 sys._MEIPASS
+APP_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 STATE_DIR = Path.home() / ".fakegps"
 STATE_DIR.mkdir(exist_ok=True)
 BOOKMARKS = STATE_DIR / "bookmarks.json"
 RECENTS = STATE_DIR / "recents.json"
 ROUTE_GPX = STATE_DIR / "route.gpx"
 IS_WIN = platform.system() == "Windows"
-PYEXE = sys.executable
+# pymobiledevice3 子程序呼叫前綴：script 走 `-m`，frozen .exe 走自我分派 sentinel
+PMD3 = ([sys.executable, "__pmd3__"] if getattr(sys, "frozen", False)
+        else [sys.executable, "-m", "pymobiledevice3"])
 
 # 執行期狀態
 _tunnel = {"proc": None, "host": None, "port": None}
@@ -40,7 +53,7 @@ _sim = {"proc": None}
 # ───────── shell ─────────
 def run(args, timeout=90):
     try:
-        p = subprocess.run([PYEXE, "-m", "pymobiledevice3", *args],
+        p = subprocess.run([*PMD3, *args],
                            capture_output=True, text=True, timeout=timeout)
         return p.returncode, p.stdout, p.stderr
     except Exception as e:  # noqa: BLE001
@@ -188,7 +201,7 @@ def start_tunnel():
     last = ""
     for cmd in _tunnel_cmds(dev["udid"]):
         proc = subprocess.Popen(
-            [PYEXE, "-m", "pymobiledevice3", *cmd],
+            [*PMD3, *cmd],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         rsd = None
@@ -229,7 +242,7 @@ def set_location(lat, lon):
     stop_sim()
     # --rsd 必須在 `--` 之前
     proc = subprocess.Popen(
-        [PYEXE, "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
+        [*PMD3, "developer", "dvt", "simulate-location",
          "set", "--rsd", _tunnel["host"], str(_tunnel["port"]), "--", str(lat), str(lon)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
@@ -246,7 +259,7 @@ def play_route(coords, mps):
     ROUTE_GPX.write_text(make_gpx(coords, mps), encoding="utf-8")
     stop_sim()
     proc = subprocess.Popen(
-        [PYEXE, "-m", "pymobiledevice3", "developer", "dvt", "simulate-location",
+        [*PMD3, "developer", "dvt", "simulate-location",
          "play", str(ROUTE_GPX), "--rsd", _tunnel["host"], str(_tunnel["port"])],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
