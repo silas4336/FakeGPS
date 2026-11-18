@@ -3,7 +3,17 @@
 分支 `claude/product-improve-197b32`，只動 `crossplatform/`、`lint.yml`、本筆記。未 push。
 沒有真實 iPhone：所有裝置端行為都是用 `crossplatform/devtools/` 的假 pymobiledevice3 驗證，標「需實機」的項目**未驗證**。
 
-最終驗證：`cd crossplatform && py -W ignore -m unittest` → `Ran 21 tests ... OK`
+最終驗證：`cd crossplatform && py -W ignore -m unittest` → `Ran 22 tests ... OK`（換基底後每個 commit 個別跑也都 OK：6/6/14/18/20/22）
+
+## 換基底（2026-11-13，依上層 session 要求）
+- 原分支建在舊歷史上，與本機 `main` 無共同祖先（`ef99b85` 與 `main` 的 `87436ba` 樹完全相同，`git diff` 無差異，只是 hash 不同）。`main` 多了 `09e69bb`（iOS 17.4+ 改用 `lockdown start-tunnel`，`remote` 當備援）、`328316f`、`b71959c`。
+- 做法：`git rebase --onto main ef99b85`。換基底前的分支備份在 `claude/product-improve-197b32-pre-rebase`（可刪）。最終分支仍是 `claude/product-improve-197b32`，`main` 是祖先，`main` 本身沒動、沒 push。
+- 衝突處理：
+  - **E4**：`main` 已有 `_tunnel_cmds(udid)`（回 lockdown、remote 兩個候選），保留它；我原本放在同名函式的 mount/set/play 組裝改名 `_device_cmds(host, port, ...)`。測試改成驗 lockdown 在前、remote 在後、都有 `--udid`/`--script-mode`、remote 用 `-p tcp`；`--rsd` 在 `--` 前的測試不變。假 CLI 支援 `lockdown start-tunnel`，新增 `FAKE_LOCKDOWN=fail`。
+  - **E2**：重寫在 `main` 的「依序嘗試」流程上：每種方式各自用 `wait_for_rsd(TUNNEL_TIMEOUT)`，失敗就 kill 換下一種；全失敗時 `detail` 包含每種方式的指令與完整輸出。新增 `test_falls_back_to_remote_when_lockdown_fails`。TUN 提示改成「lockdown tunnel 需要 Wintun」（依 CLAUDE.md 實機紀錄，lockdown 走 TUN 介面），原本寫的「-p tcp 免 TUN」已不適用。
+  - **E1/E3/E5**：只有指令組裝改名的機械性衝突，邏輯不變。
+- 換基底後截圖：`docs/session-notes/img/e2-error-on-main.jpg`（兩種 tunnel 都失敗時的錯誤與完整輸出；右下角也看得到搖桿實際位置）。
+- 注意：E4 的 commit 訊息仍寫「指令都集中到 `_tunnel_cmds()`」，換基底後實際是 `_tunnel_cmds()`（tunnel）＋ `_device_cmds()`（其餘）；沒有改寫歷史訊息。
 （不加 `-W ignore` 也是 OK，只是多印 ResourceWarning：測試裡 kill 掉的子程序 pipe 沒關，不影響結果。）
 
 ## 無裝置跑 UI 的方法
@@ -21,8 +31,8 @@ FAKE_TUNNEL=fail|hang|slow  FAKE_DEVICES=2  FAKE_LOG=路徑    # 環境變數控
 ---
 
 ## E4 最小測試 — `b2854be`
-- **改了什麼**：抽出 `pmd3()`、`_tunnel_cmds()`（tunnel/mount/set/play 指令都從這組）；新增 `test_app.py`；新增 `devtools/`；`lint.yml` 新增 `unittest` job。
-- **為什麼**：任務要測 `_tunnel_cmds`，但 HEAD 沒有這個函式（任務給的行號也對不上 HEAD，推測是對照原工作區未 commit 版本），所以抽出來。CI 用獨立 job 而不是塞進 shellcheck job，因為兩者無關。
+- **改了什麼**：抽出 `pmd3()`、`_device_cmds()`（mount/set/play；tunnel 候選沿用 `main` 的 `_tunnel_cmds()`）；新增 `test_app.py`；新增 `devtools/`；`lint.yml` 新增 `unittest` job。
+- **為什麼**：原本的舊基底沒有 `_tunnel_cmds`，換到 `main` 後才有；mount/set/play 另外抽出來才能測 `--rsd` 順序。CI 用獨立 job 而不是塞進 shellcheck job，因為兩者無關。
 - **驗證**：6 tests OK；假伺服器 `/api/start` → `{"ok":true,"rsd":"fd00::1 51234"}`、`/api/set` → `{"ok":true}`。
 
 ## E2 tunnel 期限與錯誤 — `98a5d58`
