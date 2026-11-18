@@ -272,9 +272,10 @@ def wait_for_rsd(proc, timeout):
     waiting.set()
 
     def pump():
-        for line in proc.stdout:
-            if waiting.is_set():
-                q.put(line)
+        with proc.stdout:  # 讀到 EOF 就關掉 pipe，tunnel 子程序結束後不留未關閉的檔案
+            for line in proc.stdout:
+                if waiting.is_set():
+                    q.put(line)
         q.put(None)
 
     threading.Thread(target=pump, daemon=True).start()
@@ -317,6 +318,7 @@ def start_tunnel():
                 break
             if proc_alive(proc):
                 proc.kill()
+            proc.wait()  # 收掉子程序，不留殭屍
             outputs.append("$ pymobiledevice3 " + " ".join(cmd) + "\n" + "\n".join(lines))
         if not rsd:
             out = "\n\n".join(outputs)
@@ -381,10 +383,17 @@ def play_route(coords, mps):
 def stop_sim():
     if proc_alive(_sim["proc"]):
         _sim["proc"].terminate()
+        try:
+            _sim["proc"].wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _sim["proc"].kill()
+            _sim["proc"].wait()
         if _sim.get("path"):  # 路線中途停下：最近位置是當下走到的點，不是終點
             p = _sim["path"][min(int(time.time() - _sim["started"]), len(_sim["path"]) - 1)]
             _last.update(lat=p[0], lon=p[1])
-    _sim.update(proc=None, started=None, duration=None, path=None)
+    if _sim["err"]:
+        _sim["err"].close()
+    _sim.update(proc=None, err=None, started=None, duration=None, path=None)
 
 
 def clear_location():

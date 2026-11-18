@@ -75,18 +75,21 @@ class WaitForRsdTest(unittest.TestCase):
         t = time.monotonic()
         rsd, lines, why = app.wait_for_rsd(p, 1)
         p.kill()
+        p.wait()  # 收掉子程序（pipe 由 wait_for_rsd 的讀取執行緒關閉）
         self.assertLess(time.monotonic() - t, 3)
         self.assertEqual((rsd, why, lines), (None, "timeout", ["starting"]))
 
     def test_exit_returns_full_output(self):
         p = py_proc("print('a');print('b');raise SystemExit(1)")
         rsd, lines, why = app.wait_for_rsd(p, 5)
+        p.wait()
         self.assertEqual((rsd, why, lines), (None, "exited", ["a", "b"]))
 
     def test_parses_host_port(self):
         p = py_proc("import time;print('log');print('fd00::1 51234',flush=True);time.sleep(30)")
         rsd, _, why = app.wait_for_rsd(p, 5)
         p.kill()
+        p.wait()  # 收掉子程序（pipe 由 wait_for_rsd 的讀取執行緒關閉）
         self.assertEqual((rsd, why), (("fd00::1", "51234"), None))
 
 
@@ -102,6 +105,7 @@ class StartTunnelWithFakeTest(unittest.TestCase):
     def tearDown(self):
         if app.proc_alive(app._tunnel["proc"]):
             app._tunnel["proc"].kill()
+            app._tunnel["proc"].wait()
         app._tunnel.update(proc=None, host=None, port=None, step=None)
 
     def test_ok_runs_mount(self):
@@ -169,6 +173,7 @@ class MovementWithFakeTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         cls.srv.shutdown()
+        cls.srv.server_close()  # 關掉監聽 socket
         for p in cls.patches:
             p.stop()
 
@@ -176,6 +181,7 @@ class MovementWithFakeTest(unittest.TestCase):
         app.stop_sim()
         if app.proc_alive(app._tunnel["proc"]):
             app._tunnel["proc"].kill()
+            app._tunnel["proc"].wait()
         app._tunnel.update(proc=None, host=None, port=None, step=None)
         app._last.update(lat=None, lon=None)
 
@@ -250,6 +256,7 @@ class MultiDeviceTest(unittest.TestCase):
     def tearDown(self):
         if app.proc_alive(app._tunnel["proc"]):
             app._tunnel["proc"].kill()
+            app._tunnel["proc"].wait()
         app._tunnel.update(proc=None, host=None, port=None, step=None, dev=None)
         self.setUp()
 
