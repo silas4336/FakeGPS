@@ -67,6 +67,17 @@ def detect_device():
             "version": d.get("ProductVersion")}
 
 
+DEVICE_TTL = 15  # 秒；status 輪詢最多這麼久才重跑一次 usbmux list
+_dev = {"info": None, "at": None}
+
+
+def device(fresh=False):
+    """快取 detect_device()：避免每次輪詢都開一個 pymobiledevice3 子程序。"""
+    if fresh or _dev["at"] is None or time.monotonic() - _dev["at"] > DEVICE_TTL:
+        _dev.update(info=detect_device(), at=time.monotonic())
+    return _dev["info"]
+
+
 def proc_alive(p):
     return p is not None and p.poll() is None
 
@@ -271,7 +282,7 @@ def _fail(step, error, detail=""):
 
 def start_tunnel():
     _tunnel["step"] = "detect"
-    dev = detect_device()
+    dev = device(fresh=True)
     if not dev:
         return _fail("detect", "未偵測到 iPhone（請插上 USB、解鎖、信任；Windows 需安裝 Apple 裝置 app）")
 
@@ -364,12 +375,14 @@ def clear_location():
 
 
 def status():
-    dev = detect_device()
+    tunnel_up = bool(proc_alive(_tunnel["proc"]) and _tunnel["host"])
+    # tunnel 活著就代表裝置在，不必再偵測；否則用快取（最多 DEVICE_TTL 秒重偵測一次）
+    dev = _dev["info"] if tunnel_up else device()
     return {
         "os": platform.system(),
         "device_connected": bool(dev),
         "device_name": dev["name"] if dev else None,
-        "tunnel_up": bool(proc_alive(_tunnel["proc"]) and _tunnel["host"]),
+        "tunnel_up": tunnel_up,
         "simulating": bool(proc_alive(_sim["proc"])),
         "step": _tunnel["step"],
         "last": _last if _last["lat"] is not None else None,

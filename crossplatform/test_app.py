@@ -210,5 +210,28 @@ class MovementWithFakeTest(unittest.TestCase):
         self.assertAlmostEqual(app._last["lat"], LAT0, places=4)
 
 
+class StatusPollingTest(unittest.TestCase):
+    def setUp(self):
+        app._dev.update(info=None, at=None)
+
+    tearDown = setUp
+
+    def test_status_reuses_cached_device(self):
+        dev = {"udid": "U", "name": "N", "version": "18"}
+        with mock.patch.object(app, "detect_device", return_value=dev) as det:
+            for _ in range(5):
+                self.assertEqual(app.status()["device_name"], "N")
+        self.assertEqual(det.call_count, 1)
+
+    def test_cache_expires_and_connect_forces_fresh(self):
+        with mock.patch.object(app, "detect_device", return_value=None) as det:
+            app.status()
+            app._dev["at"] -= app.DEVICE_TTL + 1
+            app.status()
+            self.assertEqual(det.call_count, 2)
+            app.start_tunnel()
+            self.assertEqual(det.call_count, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
