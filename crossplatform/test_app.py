@@ -292,5 +292,113 @@ class MultiDeviceTest(unittest.TestCase):
         self.assertFalse(app.select_device("0000FAKE-1")["ok"])  # 連線中不能切換
 
 
+class CoordTest(unittest.TestCase):
+    def test_accepts_numbers_in_range(self):
+        self.assertEqual(app.coord({"lat": 25, "lon": 121.5}, "lat", "lon"), (25.0, 121.5))
+
+    def test_rejects_bad_values(self):
+        for lat, lon in (("25", 121), (True, 121), (None, 121), (91, 0), (0, -181), (float("nan"), 0)):
+            with self.subTest(lat=lat, lon=lon), self.assertRaises(ValueError):
+                app.coord({"lat": lat, "lon": lon}, "lat", "lon")
+
+
+class ClearLocationTest(unittest.TestCase):
+    def tearDown(self):
+        app._tunnel.update(proc=None, host=None, port=None, step=None)
+
+    def test_without_tunnel_is_noop_ok(self):
+        with mock.patch.object(app, "run") as run:
+            self.assertEqual(app.clear_location(), {"ok": True})
+        run.assert_not_called()
+
+    def test_failed_clear_is_reported(self):
+        app._tunnel.update(host="fd00::1", port="51234")
+        with mock.patch.object(app, "run", return_value=(1, "", "ConnectionResetError")):
+            r = app.clear_location()
+        self.assertFalse(r["ok"])
+        self.assertIn("清除位置失敗", r["error"])
+        self.assertIn("ConnectionResetError", r["detail"])
+
+    def test_successful_clear(self):
+        app._tunnel.update(host="fd00::1", port="51234")
+        with mock.patch.object(app, "run", return_value=(0, "", "")) as run:
+            self.assertEqual(app.clear_location(), {"ok": True})
+        self.assertEqual(run.call_args.args[0][:4], ["developer", "dvt", "simulate-location", "clear"])
+
+
+class TunnelLockTest(unittest.TestCase):
+    def test_second_connect_while_connecting_is_rejected(self):
+        self.assertTrue(app._tunnel_lock.acquire(blocking=False))
+        try:
+            with mock.patch.object(app, "device") as dev:
+                r = app.start_tunnel()
+        finally:
+            app._tunnel_lock.release()
+        self.assertFalse(r["ok"])
+        self.assertIn("正在連線中", r["error"])
+        dev.assert_not_called()  # 沒有開第二個 tunnel 流程
+
+    def test_lock_released_after_failure(self):
+        with mock.patch.object(app, "device", return_value=None):
+            self.assertEqual(app.start_tunnel()["step"], "detect")
+        self.assertFalse(app._tunnel_lock.locked())
+
+
+class LocalOnlyHttpTest(unittest.TestCase):
+    """伺服器以系統管理員執行：外部網頁（CSRF／DNS rebinding）不能操作它。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import tempfile
+        import threading
+        from http.server import ThreadingHTTPServer
+        cls.tmp = Path(tempfile.mkdtemp())
+        cls.patch = mock.patch.object(app, "BOOKMARKS", cls.tmp / "b.json")
+        cls.patch.start()
+        cls.srv = ThreadingHTTPServer(("127.0.0.1", 0), app.H)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        cls.patch.stop()
+
+    def req(self, method, path, headers=None, body=None):
+        import http.client
+        import json
+        c = http.client.HTTPConnection("127.0.0.1", self.srv.server_port, timeout=10)
+        try:
+            data = json.dumps(body).encode() if body is not None else None
+            h = {"Content-Type": "application/json", **(headers or {})}
+            c.request(method, path, body=data, headers=h)
+            r = c.getresponse()
+            return r.status, json.loads(r.read() or b"null")
+        finally:
+            c.close()
+
+    def test_same_origin_post_allowed(self):
+        port = self.srv.server_port
+        st, r = self.req("POST", "/api/bookmarks/add", {"Origin": f"http://127.0.0.1:{port}"},
+                         {"name": "家", "lat": 25.0, "lon": 121.5})
+        self.assertEqual((st, r), (200, {"ok": True}))
+
+    def test_cross_site_post_rejected(self):
+        st, _ = self.req("POST", "/api/bookmarks/add", {"Origin": "https://evil.example"},
+                         {"name": "x", "lat": 1, "lon": 1})
+        self.assertEqual(st, 403)
+        self.assertNotIn("x", [b["name"] for b in app.jload(app.BOOKMARKS)])
+
+    def test_rebound_host_rejected(self):
+        st, _ = self.req("GET", "/api/status", {"Host": f"attacker.example:{self.srv.server_port}"})
+        self.assertEqual(st, 403)
+
+    def test_bad_coordinates_return_error_not_saved(self):
+        st, r = self.req("POST", "/api/bookmarks/add", None, {"name": "壞", "lat": "abc", "lon": 1})
+        self.assertEqual(st, 200)
+        self.assertFalse(r["ok"])
+        self.assertNotIn("壞", [b["name"] for b in app.jload(app.BOOKMARKS)])
+
+
 if __name__ == "__main__":
     unittest.main()

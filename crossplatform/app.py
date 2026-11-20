@@ -303,7 +303,20 @@ def _fail(step, error, detail=""):
     return {"ok": False, "step": step, "error": error, "detail": detail}
 
 
+_tunnel_lock = threading.Lock()
+
+
 def start_tunnel():
+    # 連線按鈕連按或兩個分頁同時按，會各開一個 tunnel 子程序互相覆蓋；同一時間只讓一個進行
+    if not _tunnel_lock.acquire(blocking=False):
+        return {"ok": False, "step": _tunnel["step"], "error": "正在連線中，請等這次完成"}
+    try:
+        return _start_tunnel()
+    finally:
+        _tunnel_lock.release()
+
+
+def _start_tunnel():
     _tunnel["step"] = "detect"
     dev = device(fresh=True)
     if not dev:
@@ -400,8 +413,13 @@ def stop_sim():
 
 def clear_location():
     stop_sim()
-    if _tunnel["host"]:
-        run(rsd_args(["clear"]))
+    if not _tunnel["host"]:
+        return {"ok": True}
+    rc, out, err = run(rsd_args(["clear"]))
+    if rc != 0:  # 原本不看結果一律回 ok，手機其實還停在假位置
+        detail = (out + err).strip()
+        return {"ok": False, "error": "清除位置失敗，tunnel 可能已斷：" + hint_for(detail, "請重新連線後再清除"),
+                "detail": detail}
     return {"ok": True}
 
 
@@ -436,10 +454,32 @@ def jsave(path, data):
     Path(path).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def coord(b, klat, klon):
+    """從請求取出合法的 (lat, lon)；字串、布林、超出範圍都擋掉，不送進子程序也不寫進最近使用。"""
+    lat, lon = b.get(klat), b.get(klon)
+    for v in (lat, lon):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v:
+            raise ValueError("座標格式錯誤")
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ValueError("座標超出範圍")
+    return float(lat), float(lon)
+
+
 # ───────── HTTP ─────────
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
+
+    def _local_only(self):
+        """只接受本機頁面發的請求。伺服器以系統管理員身分執行；不檢查的話，任何網頁都能
+        用表單／fetch 打 127.0.0.1 改手機位置（CSRF），或用 DNS rebinding 讀 /api/status。"""
+        port = self.server.server_address[1]
+        allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+        origin = self.headers.get("Origin")
+        if self.headers.get("Host") in allowed and (origin is None or urllib.parse.urlparse(origin).netloc in allowed):
+            return True
+        self._send(403, {"ok": False, "error": "forbidden"})
+        return False
 
     def _send(self, code, body, ctype="application/json"):
         if isinstance(body, (dict, list)):
@@ -456,6 +496,8 @@ class H(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(n).decode()) if n else {}
 
     def do_GET(self):
+        if not self._local_only():
+            return None
         u = urllib.parse.urlparse(self.path)
         if u.path in ("/", "/index.html"):
             return self._send(200, (APP_DIR / "index.html").read_text(encoding="utf-8"), "text/html")
@@ -469,6 +511,8 @@ class H(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._local_only():
+            return None
         u = urllib.parse.urlparse(self.path)
         try:
             b = self._body()
@@ -477,11 +521,12 @@ class H(BaseHTTPRequestHandler):
             if u.path == "/api/select":
                 return self._send(200, select_device(b.get("udid")))
             if u.path == "/api/set":
-                r = set_location(b["lat"], b["lon"])
+                lat, lon = coord(b, "lat", "lon")
+                r = set_location(lat, lon)
                 if r.get("ok") and not b.get("nudge"):  # 搖桿微調不灌爆「最近使用」
                     rec = jload(RECENTS)
-                    rec = [x for x in rec if abs(x["lat"]-b["lat"]) > 1e-5 or abs(x["lon"]-b["lon"]) > 1e-5]
-                    rec.insert(0, {"name": b.get("label", ""), "lat": b["lat"], "lon": b["lon"]})
+                    rec = [x for x in rec if abs(x["lat"]-lat) > 1e-5 or abs(x["lon"]-lon) > 1e-5]
+                    rec.insert(0, {"name": b.get("label", ""), "lat": lat, "lon": lon})
                     jsave(RECENTS, rec[:12])
                 return self._send(200, r)
             if u.path == "/api/clear":
@@ -490,15 +535,16 @@ class H(BaseHTTPRequestHandler):
                 stop_sim()
                 return self._send(200, {"ok": True})
             if u.path == "/api/route":
-                start = (b["slat"], b["slon"]) if b.get("slat") is not None else (_last["lat"], _last["lon"])
+                start = coord(b, "slat", "slon") if b.get("slat") is not None else (_last["lat"], _last["lon"])
                 if start[0] is None:
                     return self._send(200, {"ok": False, "error": "沒有起點：先設定一次位置，或用「設為起點」"})
-                coords = route_coords(start, (b["elat"], b["elon"]), b.get("mode", "walk"))
+                coords = route_coords(start, coord(b, "elat", "elon"), b.get("mode", "walk"))
                 mps = {"walk": 1.4, "bike": 5.5, "drive": 13.9}.get(b.get("mode", "walk"), 1.4)
                 return self._send(200, play_route(coords, mps))
             if u.path == "/api/bookmarks/add":
                 bm = [x for x in jload(BOOKMARKS) if x["name"] != b["name"]]
-                bm.append({"name": b["name"], "lat": b["lat"], "lon": b["lon"]})
+                lat, lon = coord(b, "lat", "lon")
+                bm.append({"name": b["name"], "lat": lat, "lon": lon})
                 jsave(BOOKMARKS, bm)
                 return self._send(200, {"ok": True})
             if u.path == "/api/bookmarks/del":
