@@ -292,6 +292,55 @@ class MultiDeviceTest(unittest.TestCase):
         self.assertFalse(app.select_device("0000FAKE-1")["ok"])  # 連線中不能切換
 
 
+class RouteCoordsTest(unittest.TestCase):
+    """步行／騎車要走有對應路網的服務；服務失敗或回空路線要依序退回，不能讓 gpx_points IndexError"""
+    S, E = (LAT0, LON0), (LAT1, LON0)
+    GOOD = {"routes": [{"geometry": {"coordinates": [[LON0, LAT0], [LON0, 25.0005], [LON0, LAT1]]}}]}
+
+    def call(self, mode, answers):
+        urls = []
+
+        def fake(url, timeout=15):
+            urls.append(url)
+            a = answers.pop(0)
+            if isinstance(a, Exception):
+                raise a
+            return a
+        with mock.patch.object(app, "_curl_json", side_effect=fake):
+            return app.route_coords(self.S, self.E, mode), urls
+
+    def test_mode_picks_matching_profile(self):
+        for mode, prof in (("walk", "routed-foot"), ("bike", "routed-bike"), ("drive", "routed-car")):
+            r, urls = self.call(mode, [self.GOOD])
+            self.assertIn(f"/{prof}/", urls[0])
+            self.assertEqual(r, [(LAT0, LON0), (25.0005, LON0), (LAT1, LON0)])
+
+    def test_falls_back_to_osrm_then_straight_line(self):
+        r, urls = self.call("bike", [RuntimeError("down"), self.GOOD])
+        self.assertIn("router.project-osrm.org", urls[1])
+        self.assertEqual(len(r), 3)
+        empty = {"routes": [{"geometry": {"coordinates": []}}]}
+        r, urls = self.call("walk", [empty, {"code": "NoRoute"}])
+        self.assertEqual(r, [self.S, self.E])
+        self.assertEqual(len(urls), 2)
+
+    def test_gpx_points_rejects_empty_route(self):
+        with self.assertRaises(ValueError):
+            app.gpx_points([], 1.4)
+
+
+class JloadTest(unittest.TestCase):
+    def test_non_list_or_bad_items_become_empty(self):
+        import tempfile
+        d = Path(tempfile.mkdtemp())
+        f = d / "bm.json"
+        for text, want in (('{"a": 1}', []), ("壞掉", []), ('[1, {"name": "x"}, {"name": "家", "lat": 1, "lon": 2}]',
+                                                        [{"name": "家", "lat": 1, "lon": 2}])):
+            f.write_text(text, encoding="utf-8")
+            self.assertEqual(app.jload(f), want, text)
+        self.assertEqual(app.jload(d / "沒有.json"), [])
+
+
 class CoordTest(unittest.TestCase):
     def test_accepts_numbers_in_range(self):
         self.assertEqual(app.coord({"lat": 25, "lon": 121.5}, "lat", "lon"), (25.0, 121.5))

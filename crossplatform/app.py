@@ -148,16 +148,23 @@ def geocode(q, limit=8):
 
 
 # ───────── route（OSRM 真實道路，失敗則直線）─────────
+# 公開的 router.project-osrm.org 只有開車：網址寫 foot 也照樣回開車路線（2026-11-21 實測，距離、時間跟 driving 一模一樣）。
+# 步行／騎車改走 FOSSGIS 的 routing.openstreetmap.de（各自有 foot／bike／car），失敗再退回 OSRM，最後才走直線
+ROUTERS = {"walk": "routed-foot", "bike": "routed-bike", "drive": "routed-car"}
+
+
 def route_coords(start, end, mode):
-    profile = "foot" if mode == "walk" else "driving"
-    url = (f"https://router.project-osrm.org/route/v1/{profile}/"
-           f"{start[1]},{start[0]};{end[1]},{end[0]}?overview=full&geometries=geojson")
-    try:
-        d = _curl_json(url)
-        coords = d["routes"][0]["geometry"]["coordinates"]  # [lon,lat]
-        return [(c[1], c[0]) for c in coords]
-    except Exception:  # noqa: BLE001
-        return [tuple(start), tuple(end)]
+    pair = f"{start[1]},{start[0]};{end[1]},{end[0]}?overview=full&geometries=geojson"
+    urls = [f"https://routing.openstreetmap.de/{ROUTERS.get(mode, 'routed-foot')}/route/v1/driving/{pair}",
+            f"https://router.project-osrm.org/route/v1/driving/{pair}"]
+    for url in urls:
+        try:
+            coords = _curl_json(url)["routes"][0]["geometry"]["coordinates"]  # [lon,lat]
+        except Exception:  # noqa: BLE001  服務掛了／格式不對：換下一個
+            continue
+        if len(coords) >= 2:  # 空路線送進 gpx_points 會 IndexError
+            return [(c[1], c[0]) for c in coords]
+    return [tuple(start), tuple(end)]
 
 
 MAX_GPX_POINTS = 5000
@@ -165,6 +172,8 @@ MAX_GPX_POINTS = 5000
 
 def gpx_points(route, mps, interval=1.0):
     """沿路線每 interval 秒取一點。回傳 (點列, 路線總長 m, 是否因點數上限被截斷)。"""
+    if not route:
+        raise ValueError("路線沒有任何點")
     from math import radians, sin, cos, asin, sqrt
     def dist(a, b):
         la1, lo1, la2, lo2 = map(radians, [a[0], a[1], b[0], b[1]])
@@ -444,10 +453,12 @@ def status():
 
 # ───────── bookmarks/recents ─────────
 def jload(path):
+    """書籤／最近使用是清單；檔案壞掉或被改成別的型別（例如 {}）都當成空的，不讓後面的迴圈出錯"""
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
         return []
+    return [x for x in data if isinstance(x, dict) and "name" in x and "lat" in x and "lon" in x] if isinstance(data, list) else []
 
 
 def jsave(path, data):
