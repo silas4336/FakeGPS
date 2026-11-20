@@ -42,8 +42,8 @@ crossplatform\run.bat
 python -m pymobiledevice3 usbmux list
 
 :: 2. 手動建 tunnel 看真正的錯誤（需 admin）——最容易卡的一步
-python -m pymobiledevice3 remote start-tunnel -t usb --udid <UDID> -p tcp --script-mode
-::   成功會印出一行 "HOST PORT"（例如 fd00::1 51234）並持續掛著
+python -m pymobiledevice3 lockdown start-tunnel --udid <UDID> --script-mode
+::   成功會印出一行 "HOST PORT"（例如 fd00::1 51234）並持續掛著；iOS 17.4 以前的舊路徑是 remote start-tunnel -t usb
 
 :: 3. 用上面的 HOST PORT 掛 DDI 並設位置
 python -m pymobiledevice3 mounter auto-mount --rsd <HOST> <PORT>
@@ -57,16 +57,21 @@ python -m pymobiledevice3 developer dvt simulate-location set --rsd <HOST> <PORT
 3. **iOS 17.4+ / iOS 18 / 26+ 一定要用 `lockdown start-tunnel`**（實機驗證）。舊的 `remote start-tunnel -t usb -p tcp` 在新版 iOS 會 `No tunnel services discovered` → `Device is not connected`，建不起來。`remote tunneld` daemon 在 Python 3.12（預設 quic）這台也沒成功建 tunnel。`lockdown start-tunnel` 走的 TUN 介面在這台 Windows 11 正常（wintun 可用）。
 4. **pymobiledevice3 要新版（>=4）**。舊版（如 2.x）搭新版 `qh3`（>=1.0）建 QUIC tunnel 會 crash（`KeyError: Epoch.ONE_RTT`）。`pip install -U pymobiledevice3` 即可。
 5. 裝置偵測用 `pymobiledevice3 usbmux list`（跨平台），**不需要** libimobiledevice（那是 macOS CLI 用的）。
-6. 搜尋走 **Photon + OpenStreetMap**（免金鑰）；路線走公開 **OSRM**，失敗則直線。都用 `curl`（Windows 10+ 內建 curl.exe）或 urllib。
+6. 搜尋走 **Photon + OpenStreetMap**（免金鑰）；路線先走 FOSSGIS **routing.openstreetmap.de**（步行／騎車／開車各有路網），失敗退回公開 **OSRM**，再失敗才走直線。公開 OSRM 只有開車：網址寫 `foot` 也照樣回開車路線（2026-11-21 實測）。都用 `curl`（Windows 10+ 內建 curl.exe）或 urllib。
+7. **本機 API 只接受自己的網址**：`Host` 必須是 `127.0.0.1`／`localhost` 加本服務 port，`Origin` 要嘛沒有、要嘛一樣，否則 403（`H._local_only`）。伺服器用系統管理員身分跑，少了這層任何網頁都能改手機位置。改 HTTP 這段時別拿掉。
 
 ## 檔案地圖（crossplatform/）
 
 | 檔案 | 用途 |
 |------|------|
-| `app.py` | 本機 HTTP 後端，包 pymobiledevice3。端點：`/api/status`、`/api/start`(建 tunnel)、`/api/set`、`/api/clear`、`/api/route`、`/api/search`、`/api/bookmarks*` |
+| `app.py` | 本機 HTTP 後端，包 pymobiledevice3。GET：`/api/status`、`/api/bookmarks`、`/api/search`；POST：`/api/start`（建 tunnel）、`/api/select`（多台選一台）、`/api/set`、`/api/clear`、`/api/stop`（停路線）、`/api/route`、`/api/bookmarks/add`、`/api/bookmarks/del` |
 | `index.html` | Leaflet 地圖 UI |
 | `run.bat` / `run.sh` | 提權啟動器 |
-| `requirements.txt` | `pymobiledevice3` |
+| `requirements.txt` | `pymobiledevice3`（鎖版本） |
+| `test_app.py` | 單元測試（只用標準庫）：`cd crossplatform && py -m unittest`，改完必跑 |
+| `devtools/` | 假 pymobiledevice3 與 `fake_server.py`，沒有 iPhone 也能開 UI |
+
+架構與資料流見 `docs/architecture.md`。
 
 `.github/workflows/build-windows.yml` 會在 GitHub Windows runner 用 PyInstaller 打包單一 `.exe`（手動觸發或打 `v*` tag）。
 

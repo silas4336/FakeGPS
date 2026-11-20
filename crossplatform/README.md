@@ -36,8 +36,13 @@ On macOS you likely want the native app instead — see the main README.
 
 - **Admin/root is required** for the USB tunnel on every OS (Windows UAC / `sudo`). There's no
   password-less helper here (that's a macOS-only convenience in the native app).
-- Search uses **Photon + OpenStreetMap** (no API key). Movement routing uses the public **OSRM**
-  server with a straight-line fallback.
+- Search uses **Photon + OpenStreetMap** (no API key). Movement routing uses FOSSGIS
+  **routing.openstreetmap.de** (separate foot / bike / car networks), then the public **OSRM** demo
+  server, then a straight line. (The OSRM demo only has a car profile — asking it for `foot` silently
+  returns the driving route.)
+- The local API only answers requests whose `Host` is `127.0.0.1` / `localhost` on its own port, and
+  whose `Origin` (if any) matches. Other web pages can't move your phone or read device info
+  (CSRF / DNS-rebinding protection). Coordinates are type- and range-checked before they reach the device.
 - iOS **17+** only (modern RemoteXPC tunnel). The backend tries `lockdown start-tunnel` first and
   falls back to `remote start-tunnel -t usb`. On iOS 17.4+ (incl. iOS 18 / 26+) only the
   `lockdown` path works — the old `remote -t usb` path returns *"No tunnel services discovered /
@@ -67,4 +72,8 @@ On macOS you likely want the native app instead — see the main README.
 | `app.py` | HTTP backend wrapping pymobiledevice3 (OS-aware) |
 | `index.html` | Leaflet map UI |
 | `run.bat` / `run.sh` | Elevated launchers |
-| `requirements.txt` | Python deps |
+| `requirements.txt` | Python deps (pinned `pymobiledevice3`) |
+| `test_app.py` | Unit tests, stdlib only: `cd crossplatform && py -m unittest` |
+| `devtools/` | Fake `pymobiledevice3` + `fake_server.py` to run the UI without an iPhone |
+
+Architecture and data flow: [`../docs/architecture.md`](../docs/architecture.md).
